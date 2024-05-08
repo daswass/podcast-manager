@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 import shutil
 import glob
+import re
 import pytz
 
 def print_mp3_duration(audio, num_tabs=0):
@@ -78,15 +79,18 @@ def trim_audio(episode_file_path, skip_first, skip_last):
 
 def squeeze_audio(episode_file_path, playback_speed):
     if playback_speed != 1.0:
-        audio = AudioSegment.from_mp3(episode_file_path)
-        os.remove(episode_file_path)
+        try:
+            audio = AudioSegment.from_mp3(episode_file_path)
+            os.remove(episode_file_path)
 
-        print(f"\tChanging speed: [{playback_speed}x] ...")
+            print(f"\tChanging speed: [{playback_speed}x] ...")
 
-        audio.export(episode_file_path, format="mp3", parameters=["-filter:a", f"atempo={playback_speed}"])
-        
-        squeezed_audio = AudioSegment.from_mp3(episode_file_path)
-        print_mp3_duration(squeezed_audio, num_tabs=2)
+            audio.export(episode_file_path, format="mp3", parameters=["-filter:a", f"atempo={playback_speed}"])
+            
+            squeezed_audio = AudioSegment.from_mp3(episode_file_path)
+            print_mp3_duration(squeezed_audio, num_tabs=2)
+        except:
+            print("Failed to squeeze audio")
 
 def process_audio(info, episode_file_path):
     audio = AudioSegment.from_mp3(episode_file_path)
@@ -108,15 +112,18 @@ def main(usb_drive_base_dir):
         "Goldman Sachs The Markets": {"url": "https://feeds.megaphone.fm/GLD9322922848", "category": "Finance", "num_episodes": 1, "skip_first": 10, "skip_last": 25, "playback_speed": 1.4},
         "Unhedged": {"url": "https://feeds.acast.com/public/shows/6478a825654260001190a7cb", "category": "Finance", "num_episodes": 1, "skip_first": 30, "skip_last": 45, "playback_speed": 1.4},
         
-        "Ben Greenfield Life": {"url": "https://www.omnycontent.com/d/playlist/e58478bf-2dc2-4cb0-b7e9-afb301219b9a/3e7cc436-2b1b-42c0-9170-afc701069980/5ba357f9-00a2-4cfb-ad41-afc7010699a1/podcast.rss", "category": "BioHack", "num_episodes": 1, "skip_first": 305, "skip_last": 0, "playback_speed": 1.5},
+        "Ben Greenfield Life": {"url": "https://www.omnycontent.com/d/playlist/e58478bf-2dc2-4cb0-b7e9-afb301219b9a/3e7cc436-2b1b-42c0-9170-afc701069980/5ba357f9-00a2-4cfb-ad41-afc7010699a1/podcast.rss", "category": "BioHack", "num_episodes": 1, "skip_first": 305, "skip_last": 30, "playback_speed": 1.5},
         "The Human Upgrade with Dave Asprey": {"url": "https://rss.art19.com/human-upgrade", "category": "BioHack", "num_episodes": 1, "skip_first": 150, "skip_last": 0, "playback_speed": 1.5},
+        "Huberman Lab": {"url": "https://feeds.megaphone.fm/hubermanlab", "category": "BioHack", "num_episodes": 1, "skip_first": 30, "skip_last": 0, "playback_speed": 1.5},
         
-        "Heroic with Brian Johnson": {"url": "https://brianjohnson.libsyn.com/rss", "category": "Heroic", "num_episodes": 1, "skip_first": 15, "skip_last": 30, "playback_speed": 1.0},
-        "The Daily Dad": {"url": "https://feeds.buzzsprout.com/424261.rss", "category": "Heroic", "num_episodes": 1, "skip_first": 30, "skip_last": 80, "playback_speed": 1.0},
-        "The Daily Stoic": {"url": "https://rss.art19.com/the-daily-stoic", "category": "Heroic", "num_episodes": 1, "skip_first": 30, "skip_last": 0, "playback_speed": 1.0},
+        "Heroic with Brian Johnson": {"url": "https://brianjohnson.libsyn.com/rss", "category": "Heroic", "num_episodes": 1, "skip_first": 10, "skip_last": 0, "playback_speed": 1.0},
+        "The Daily Dad": {"url": "https://feeds.buzzsprout.com/424261.rss", "category": "Heroic", "num_episodes": 1, "skip_first": 60, "skip_last": 40, "playback_speed": 1.0},
+        "The Daily Stoic": {"url": "https://rss.art19.com/the-daily-stoic", "category": "Heroic", "num_episodes": 1, "skip_first": 30, "skip_last": 40, "playback_speed": 1.0},
         
-        "Deep House Moscow": {"url": "https://feeds.soundcloud.com/users/soundcloud:users:164601864/sounds.rss", "category": "Music", "num_episodes": 1, "skip_first": 0, "skip_last": 0, "playback_speed": 1.0},
+        "Deep House Moscow": {"url": "https://feeds.soundcloud.com/users/soundcloud:users:164601864/sounds.rss", "category": "Music", "num_episodes": 2, "skip_first": 0, "skip_last": 0, "playback_speed": 1.0},
         "Heldeep Radio": {"url": "https://oliverheldens.podtree.com/feed/podcast/", "category": "Music", "num_episodes": 1, "skip_first": 45, "skip_last": 0, "playback_speed": 1.0},
+        "Clublife Radio": {"url": "https://feeds.acast.com/public/shows/593eded1acfa040562f3480b", "category": "Music", "num_episodes": 1, "skip_first": 45, "skip_last": 0, "playback_speed": 1.0},
+        "Mixmash Radio": {"url": "https://feeds.soundcloud.com/users/soundcloud:users:349864211/sounds.rss", "category": "Music", "num_episodes": 1, "skip_first": 45, "skip_last": 0, "playback_speed": 1.0},
     }
 
     tmp_dir = "/tmp/OpenSwim/"
@@ -124,7 +131,7 @@ def main(usb_drive_base_dir):
     #if os.path.exists(tmp_dir):
     #    shutil.rmtree(tmp_dir)
 
-    last_run_timestamp = update_last_run_timestamp(usb_drive_base_dir)
+    last_run_timestamp = get_last_run_timestamp(usb_drive_base_dir)
     last_run_date_string = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_run_timestamp))
 
     for podcast_name, info in podcast_feeds.items():
@@ -147,7 +154,7 @@ def main(usb_drive_base_dir):
                 break  # If there are no more episodes in the feed, exit the loop
 
             episode = feed.entries[i]
-            episode_title = episode.title
+            episode_title = re.sub(r'[ /]', '_', episode.title)
             episode_url = episode.enclosures[0].href
             
             publication_timestamp = time.mktime(episode.published_parsed)
@@ -197,9 +204,19 @@ def main(usb_drive_base_dir):
         
         shutil.rmtree(tmp_dir)
 
+        update_last_run_timestamp(usb_drive_base_dir)
         print("Podcast episodes organized and downloaded. Big Day!")
     else:
         print("Error: USB drive not mounted. Please connect the USB drive and try again.")
+
+def wait_for_usb_drive(usb_base_drive_dir):
+    while not os.path.exists(usb_base_drive_dir):
+        print("\rWaiting for USB drive at {}{} ".format(usb_base_drive_dir, "." * ((int(time.time()) % 3) + 1)), end="", flush=True)
+        time.sleep(1)
+        print("\r" + " " * 50, end="", flush=True)  # Clear the line
+    
+    print("\rUSB drive is available at {}".format(usb_base_drive_dir))
+    main(usb_base_drive_dir)
 
 if __name__ == "__main__":
     usb_drive_base_dir = "/Volumes/OpenSwim/"
@@ -214,4 +231,4 @@ if __name__ == "__main__":
         else:
             main(usb_drive_base_dir)
     else:
-        main(usb_drive_base_dir)
+        wait_for_usb_drive(usb_drive_base_dir)
