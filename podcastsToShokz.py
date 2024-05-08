@@ -9,6 +9,17 @@ import glob
 import re
 import pytz
 
+import ssl
+
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    # Legacy Python that doesn't verify HTTPS certificates by default
+    pass
+else:
+    # Handle target environment that doesn't support HTTPS verification
+    ssl._create_default_https_context = _create_unverified_https_context
+
 def print_mp3_duration(audio, num_tabs=0):
     try:
         duration_ms = len(audio)
@@ -147,10 +158,23 @@ def main(usb_drive_base_dir):
         # Create the category directory if it doesn't exist
         os.makedirs(tmp_category_dir, exist_ok=True)
 
-        feed = feedparser.parse(feed_url)
+        retries = 3  # Number of retries
+        for _ in range(retries):
+            try:
+                feed = feedparser.parse(feed_url)
+                break
+            except Exception as e:
+                print(f"Error occurred: {e}")
+                print("Retrying...")
+                time.sleep(3)  # Add a delay before retrying
+        else:
+            print("All retries failed. Exiting...")
+
 
         for i in range(num_episodes):
             if i >= len(feed.entries):
+                print("\t No Episodes in feed.")
+                print(feed)
                 break  # If there are no more episodes in the feed, exit the loop
 
             episode = feed.entries[i]

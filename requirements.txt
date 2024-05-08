@@ -1,0 +1,10 @@
+certifi==2023.11.17
+charset-normalizer==3.3.2
+feedparser==6.0.11
+idna==3.6
+numpy @ file:///private/tmp/numpy-20240108-5731-uciys2/numpy-1.26.3
+pydub==0.25.1
+pytz==2023.4
+requests==2.31.0
+sgmllib3k==1.0.0
+urllib3==2.2.0
