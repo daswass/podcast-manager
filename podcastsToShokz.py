@@ -122,10 +122,12 @@ def main(usb_drive_base_dir):
         "FT News Briefing": {"url": "https://rss.acast.com/ftnewsbriefing", "category": "Finance", "num_episodes": 1, "skip_first": 30, "skip_last": 80, "playback_speed": 1.4},
         "Goldman Sachs The Markets": {"url": "https://feeds.megaphone.fm/GLD9322922848", "category": "Finance", "num_episodes": 1, "skip_first": 10, "skip_last": 25, "playback_speed": 1.4},
         "Unhedged": {"url": "https://feeds.acast.com/public/shows/6478a825654260001190a7cb", "category": "Finance", "num_episodes": 1, "skip_first": 30, "skip_last": 45, "playback_speed": 1.4},
+        "The Daily": {"url": "https://feeds.simplecast.com/54nAGcIl", "category": "Finance", "num_episodes": 1, "skip_first": 30, "skip_last": 30, "playback_speed": 1.4},
+        "WSJ Minute Briefing": {"url": "https://video-api.wsj.com/podcast/rss/wsj/minute-briefing", "category": "Finance", "num_episodes": 1, "skip_first": 15, "skip_last": 15, "playback_speed": 1.4},
         
         "Ben Greenfield Life": {"url": "https://www.omnycontent.com/d/playlist/e58478bf-2dc2-4cb0-b7e9-afb301219b9a/3e7cc436-2b1b-42c0-9170-afc701069980/5ba357f9-00a2-4cfb-ad41-afc7010699a1/podcast.rss", "category": "BioHack", "num_episodes": 1, "skip_first": 305, "skip_last": 30, "playback_speed": 1.5},
         "The Human Upgrade with Dave Asprey": {"url": "https://rss.art19.com/human-upgrade", "category": "BioHack", "num_episodes": 1, "skip_first": 150, "skip_last": 0, "playback_speed": 1.5},
-        "Huberman Lab": {"url": "https://feeds.megaphone.fm/hubermanlab", "category": "BioHack", "num_episodes": 1, "skip_first": 30, "skip_last": 0, "playback_speed": 1.5},
+        "Huberman Lab": {"url": "https://feeds.megaphone.fm/hubermanlab", "category": "BioHack", "num_episodes": 1, "skip_first": 120, "skip_last": 0, "playback_speed": 1.5},
         
         "Heroic with Brian Johnson": {"url": "https://brianjohnson.libsyn.com/rss", "category": "Heroic", "num_episodes": 1, "skip_first": 10, "skip_last": 0, "playback_speed": 1.0},
         "The Daily Dad": {"url": "https://feeds.buzzsprout.com/424261.rss", "category": "Heroic", "num_episodes": 1, "skip_first": 60, "skip_last": 40, "playback_speed": 1.0},
