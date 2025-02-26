@@ -1,4 +1,3 @@
-import feedparser
 import requests
 import os
 from pydub import AudioSegment
@@ -10,7 +9,6 @@ import re
 import pytz
 
 import ssl
-
 try:
     _create_unverified_https_context = ssl._create_unverified_context
 except AttributeError:
@@ -19,6 +17,16 @@ except AttributeError:
 else:
     # Handle target environment that doesn't support HTTPS verification
     ssl._create_default_https_context = _create_unverified_https_context
+
+import podcastindex
+config = {
+    "api_key": "ZXPHX5QZQXYTZ8U4MEZF",
+    "api_secret": "qwVssrrrjvZGBgXw9775dTqwe55qSu#QmCP4LFXE"
+}
+index = podcastindex.init(config)
+
+TMP_DIR = "/tmp/OpenSwim/"
+LOCAL_TIMEZONE = pytz.timezone('America/New_York')
 
 def print_mp3_duration(audio, num_tabs=0):
     try:
@@ -114,109 +122,135 @@ def process_audio(info, episode_file_path):
     trim_audio(episode_file_path, skip_first, skip_last)
     squeeze_audio(episode_file_path, playback_speed)
 
-def main(usb_drive_base_dir):
-    local_timezone = pytz.timezone('America/New_York')
+def podcast(id, trim, num_episodes, speed):
+    result = index.podcastByFeedId(id)
+    podcast_url = result["feed"]["url"]
 
-    # Dictionary mapping podcast names to their RSS feed URLs, categories, number of episodes to download, skip_first, skip_last, playback_speed
-    podcast_feeds = {
-        "FT News Briefing": {"url": "https://rss.acast.com/ftnewsbriefing", "category": "Finance", "num_episodes": 1, "skip_first": 30, "skip_last": 80, "playback_speed": 1.4},
-        "Goldman Sachs The Markets": {"url": "https://feeds.megaphone.fm/GLD9322922848", "category": "Finance", "num_episodes": 1, "skip_first": 10, "skip_last": 25, "playback_speed": 1.4},
-        "Unhedged": {"url": "https://feeds.acast.com/public/shows/6478a825654260001190a7cb", "category": "Finance", "num_episodes": 1, "skip_first": 30, "skip_last": 45, "playback_speed": 1.4},
-        "The Daily": {"url": "https://feeds.simplecast.com/54nAGcIl", "category": "Finance", "num_episodes": 1, "skip_first": 30, "skip_last": 30, "playback_speed": 1.4},
-        "WSJ Minute Briefing": {"url": "https://video-api.wsj.com/podcast/rss/wsj/minute-briefing", "category": "Finance", "num_episodes": 1, "skip_first": 15, "skip_last": 15, "playback_speed": 1.4},
-        
-        "Ben Greenfield Life": {"url": "https://www.omnycontent.com/d/playlist/e58478bf-2dc2-4cb0-b7e9-afb301219b9a/3e7cc436-2b1b-42c0-9170-afc701069980/5ba357f9-00a2-4cfb-ad41-afc7010699a1/podcast.rss", "category": "BioHack", "num_episodes": 1, "skip_first": 305, "skip_last": 30, "playback_speed": 1.5},
-        "The Human Upgrade with Dave Asprey": {"url": "https://rss.art19.com/human-upgrade", "category": "BioHack", "num_episodes": 1, "skip_first": 150, "skip_last": 0, "playback_speed": 1.5},
-        "Huberman Lab": {"url": "https://feeds.megaphone.fm/hubermanlab", "category": "BioHack", "num_episodes": 1, "skip_first": 120, "skip_last": 0, "playback_speed": 1.5},
-        
-        "Heroic with Brian Johnson": {"url": "https://brianjohnson.libsyn.com/rss", "category": "Heroic", "num_episodes": 1, "skip_first": 10, "skip_last": 0, "playback_speed": 1.0},
-        "The Daily Dad": {"url": "https://feeds.buzzsprout.com/424261.rss", "category": "Heroic", "num_episodes": 1, "skip_first": 60, "skip_last": 40, "playback_speed": 1.0},
-        "The Daily Stoic": {"url": "https://rss.art19.com/the-daily-stoic", "category": "Heroic", "num_episodes": 1, "skip_first": 30, "skip_last": 40, "playback_speed": 1.0},
-        
-        "Deep House Moscow": {"url": "https://feeds.soundcloud.com/users/soundcloud:users:164601864/sounds.rss", "category": "Music", "num_episodes": 2, "skip_first": 0, "skip_last": 0, "playback_speed": 1.0},
-        "Heldeep Radio": {"url": "https://oliverheldens.podtree.com/feed/podcast/", "category": "Music", "num_episodes": 1, "skip_first": 45, "skip_last": 0, "playback_speed": 1.0},
-        "Clublife Radio": {"url": "https://feeds.acast.com/public/shows/593eded1acfa040562f3480b", "category": "Music", "num_episodes": 1, "skip_first": 45, "skip_last": 0, "playback_speed": 1.0},
-        "Mixmash Radio": {"url": "https://feeds.soundcloud.com/users/soundcloud:users:349864211/sounds.rss", "category": "Music", "num_episodes": 1, "skip_first": 45, "skip_last": 0, "playback_speed": 1.0},
+    return {
+        "id": id,
+        "url": podcast_url,
+        "category": "Finance",
+        "num_episodes": num_episodes,
+        "skip_first": trim[0],
+        "skip_last": trim[1],
+        "playback_speed": speed
     }
 
-    tmp_dir = "/tmp/OpenSwim/"
+def podcast_finance(id, trim, num_episodes=1, speed=1.4):
+    obj = podcast(id, trim, num_episodes, speed)
+    obj["category"] = "Finance"
+    return obj
 
-    #if os.path.exists(tmp_dir):
-    #    shutil.rmtree(tmp_dir)
+def podcast_biohack(id, trim, num_episodes=1, speed=1.5):
+    obj = podcast(id, trim, num_episodes, speed)
+    obj["category"] = "BioHack"
+    return obj
+
+def podcast_heroic(id, trim, num_episodes=1, speed=1.0):
+    obj = podcast(id, trim, num_episodes, speed)
+    obj["category"] = "Heroic"
+    return obj
+
+def podcast_music(id, trim, num_episodes):
+    obj = podcast(id, trim, num_episodes, 1.0)
+    obj["category"] = "Music"
+    return obj
+
+def process_feed_api(last_run_timestamp, podcast_name, info):
+    feed_id = info["id"]
+    category = info["category"]
+    category_dir = os.path.join(usb_drive_base_dir, category)
+    tmp_category_dir = os.path.join(TMP_DIR, category)
+    num_episodes = info.get("num_episodes", 1)
+
+    feed = index.episodesByFeedId(feed_id, since=last_run_timestamp)
+
+    for i in range(num_episodes):
+        if i >= len(feed["items"]):
+            print("\t No new episodes in feed")
+            #print(feed)
+            break  # If there are no more episodes in the feed, exit the loop
+
+        episode = feed["items"][i]
+        episode_title = re.sub(r'[ /]', '_', episode["title"])
+        episode_url = episode["enclosureUrl"]
+        
+        publication_timestamp = episode["datePublished"]
+        publication_local_date_string = datetime.fromtimestamp(publication_timestamp, tz=pytz.UTC).astimezone(LOCAL_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')
+
+        print(f"[{i+1}] Episode: {episode_title}")
+        print(f"[{i+1}] Published: {publication_local_date_string}")
+
+        if publication_timestamp <= last_run_timestamp:
+            print(f"\tSkipping episode published before last run")
+            continue
+
+        episode_file_path = os.path.join(category_dir, f"{podcast_name} - {episode_title}.mp3")
+        tmp_episode_file_path = os.path.join(tmp_category_dir, f"{podcast_name} - {episode_title}.mp3")
+
+        if os.path.exists(episode_file_path) or os.path.exists(tmp_episode_file_path):
+            print(f"\tSkip. Already downloaded.")
+        else:
+            response = requests.get(episode_url)
+            if response.status_code == 200:
+                with open(tmp_episode_file_path, "wb") as f:
+                    f.write(response.content)
+                    
+                    file_size = os.path.getsize(tmp_episode_file_path)
+                    if file_size < 1024:
+                        print(f"\tFile size [{file_size} bytes] too small: Skipping")
+                        continue
+
+                process_audio(info, tmp_episode_file_path)
+
+def main(usb_drive_base_dir):
+    # Dictionary mapping podcast names to their RSS feed URLs, categories, number of episodes to download, skip_first, skip_last, playback_speed
+    # See: https://podcastindex.org/
+    podcast_feeds = {
+        "FT News Briefing":             podcast_finance(73509,  [30, 80]),
+        "Goldman Sachs The Markets":    podcast_finance(6321730,[10, 25]),
+        "Unhedged":                     podcast_finance(6416251,[32, 45]),
+        "The Daily":                    podcast_finance(743229, [32, 30]),
+        "WSJ Minute Briefing":          podcast_finance(325708, [20, 10]),
+        
+        "Ben Greenfield Life":                  podcast_biohack(310787, [315 ,30]),
+        "The Human Upgrade with Dave Asprey":   podcast_biohack(1031629, [150, 0]),
+        "Huberman Lab":                         podcast_biohack(1365758, [120, 20]),
+
+        "Heroic with Brian Johnson":    podcast_heroic(842919, [10, 0]),
+        "The Daily Dad":                podcast_heroic(743919, [90, 30]),
+        "The Daily Stoic":              podcast_heroic(404905, [34, 40]),
+
+        "Deep House Moscow":            podcast_music(1105989, [0, 0], 2),
+        "Heldeep Radio":                podcast_music(7021728, [45, 0], 1),
+        "Clublife Radio":               podcast_music(41388, [45, 0], 1),
+    }
 
     last_run_timestamp = get_last_run_timestamp(usb_drive_base_dir)
-    last_run_date_string = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_run_timestamp))
+    #last_run_date_string = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_run_timestamp))
 
     for podcast_name, info in podcast_feeds.items():
-        category = info["category"]
-        category_dir = os.path.join(usb_drive_base_dir, category)
-        tmp_category_dir = os.path.join(tmp_dir, category)
+        feed_id = info["id"]
         feed_url = info["url"]
-        num_episodes = info.get("num_episodes", 1)  # Default to 1 if not specified
-
-        print(f"\nPodcast: {podcast_name}")
+        category = info["category"]
+        tmp_category_dir = os.path.join(TMP_DIR, category)
+        
+        print(f"\nPodcast: [{feed_id}] {podcast_name}")
         print(f"URL: {feed_url}")
 
         # Create the category directory if it doesn't exist
         os.makedirs(tmp_category_dir, exist_ok=True)
 
-        retries = 3  # Number of retries
-        for _ in range(retries):
-            try:
-                feed = feedparser.parse(feed_url)
-                break
-            except Exception as e:
-                print(f"Error occurred: {e}")
-                print("Retrying...")
-                time.sleep(3)  # Add a delay before retrying
-        else:
-            print("All retries failed. Exiting...")
-
-
-        for i in range(num_episodes):
-            if i >= len(feed.entries):
-                print("\t No Episodes in feed.")
-                print(feed)
-                break  # If there are no more episodes in the feed, exit the loop
-
-            episode = feed.entries[i]
-            episode_title = re.sub(r'[ /]', '_', episode.title)
-            episode_url = episode.enclosures[0].href
-            
-            publication_timestamp = time.mktime(episode.published_parsed)
-            publication_local_date_string = datetime.fromtimestamp(publication_timestamp, tz=pytz.UTC).astimezone(local_timezone).strftime('%Y-%m-%d %H:%M:%S')
-
-            print(f"Episode: {episode_title}")
-            print(f"Published: {publication_local_date_string}")
-
-            if publication_timestamp <= last_run_timestamp:
-                print(f"\tSkipping episode published before last run: {last_run_date_string}")
-                continue
-
-            episode_file_path = os.path.join(category_dir, f"{podcast_name} - {episode_title}.mp3")
-            tmp_episode_file_path = os.path.join(tmp_category_dir, f"{podcast_name} - {episode_title}.mp3")
-
-            if os.path.exists(episode_file_path) or os.path.exists(tmp_episode_file_path):
-                print(f"\tSkip. Already downloaded.")
-            else:
-                response = requests.get(episode_url)
-                if response.status_code == 200:
-                    with open(tmp_episode_file_path, "wb") as f:
-                        f.write(response.content)
-                        
-                        file_size = os.path.getsize(tmp_episode_file_path)
-                        if file_size < 1024:
-                            print(f"\tFile size [{file_size} bytes] too small: Skipping")
-                            continue
-
-                    process_audio(info, tmp_episode_file_path)
+        #process_feed_direct(last_run_timestamp, podcast_name, info)
+        process_feed_api(last_run_timestamp, podcast_name, info)
 
     # Move all downloaded and processed episodes to the USB drive
     if os.path.exists(usb_drive_base_dir):
         print(f"\nProcessing Complete. Copying latest Podcasts to OpenSwim ...")
         for podcast_name, info in podcast_feeds.items():
             category = info["category"]
-            tmp_category_dir = os.path.join(tmp_dir, category)
+            num_episodes = info.get("num_episodes", 1)
+            tmp_category_dir = os.path.join(TMP_DIR, category)
             category_dir = os.path.join(usb_drive_base_dir, category)
 
             os.makedirs(category_dir, exist_ok=True)
@@ -228,7 +262,7 @@ def main(usb_drive_base_dir):
 
             delete_old_episodes(category_dir, podcast_name, num_episodes)
         
-        shutil.rmtree(tmp_dir)
+        shutil.rmtree(TMP_DIR)
 
         update_last_run_timestamp(usb_drive_base_dir)
         print("Podcast episodes organized and downloaded. Big Day!")

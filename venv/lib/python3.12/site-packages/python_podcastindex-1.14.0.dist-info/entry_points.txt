@@ -1,0 +1,2 @@
+[console_scripts]
+realpython = podcastindex.__main__:main
