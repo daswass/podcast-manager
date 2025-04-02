@@ -19,9 +19,11 @@ else:
     ssl._create_default_https_context = _create_unverified_https_context
 
 import podcastindex
+from dotenv import load_dotenv
+load_dotenv()
 config = {
-    "api_key": "ZXPHX5QZQXYTZ8U4MEZF",
-    "api_secret": "qwVssrrrjvZGBgXw9775dTqwe55qSu#QmCP4LFXE"
+    "api_key": os.getenv('API_KEY'),
+    "api_secret": os.getenv('API_SECRET')
 }
 index = podcastindex.init(config)
 
@@ -211,7 +213,7 @@ def main(usb_drive_base_dir):
         "Goldman Sachs The Markets":    podcast_finance(6321730,[10, 25]),
         "Unhedged":                     podcast_finance(6416251,[32, 45]),
         "The Daily":                    podcast_finance(743229, [32, 30]),
-        "WSJ Minute Briefing":          podcast_finance(325708, [20, 10]),
+        "WSJ Whats News":               podcast_finance(491326, [20, 10]),
         
         "Ben Greenfield Life":                  podcast_biohack(310787, [315 ,30]),
         "The Human Upgrade with Dave Asprey":   podcast_biohack(1031629, [150, 0]),
