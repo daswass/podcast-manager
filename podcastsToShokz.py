@@ -124,38 +124,44 @@ def process_audio(info, episode_file_path):
     trim_audio(episode_file_path, skip_first, skip_last)
     squeeze_audio(episode_file_path, playback_speed)
 
-def podcast(id, trim, num_episodes, speed):
+def podcast(category, id, trim, num_episodes, speed, force_latest=0):
     result = index.podcastByFeedId(id)
-    podcast_url = result["feed"]["url"]
 
+    feed = result.get("feed")
+    if isinstance(feed, list):
+        if len(feed) == 0:
+            raise ValueError(f"No feed found for id {id}")
+        podcast_url = feed[0]["url"]
+    elif isinstance(feed, dict):
+        podcast_url = feed["url"]
+    else:
+        raise ValueError(f"Unexpected feed type for id {id}: {type(feed)}")
+    
     return {
         "id": id,
         "url": podcast_url,
-        "category": "Finance",
+        "category": category,
         "num_episodes": num_episodes,
         "skip_first": trim[0],
         "skip_last": trim[1],
-        "playback_speed": speed
+        "playback_speed": speed,
+        "force_latest": force_latest
     }
 
 def podcast_finance(id, trim, num_episodes=1, speed=1.4):
-    obj = podcast(id, trim, num_episodes, speed)
-    obj["category"] = "Finance"
+    obj = podcast("Finance", id, trim, num_episodes, speed)
     return obj
 
 def podcast_biohack(id, trim, num_episodes=1, speed=1.5):
-    obj = podcast(id, trim, num_episodes, speed)
-    obj["category"] = "BioHack"
+    obj = podcast("BioHack", id, trim, num_episodes, speed)
     return obj
 
 def podcast_heroic(id, trim, num_episodes=1, speed=1.0):
-    obj = podcast(id, trim, num_episodes, speed)
-    obj["category"] = "Heroic"
+    obj = podcast("Heroic", id, trim, num_episodes, speed)
     return obj
 
 def podcast_music(id, trim, num_episodes):
-    obj = podcast(id, trim, num_episodes, 1.0)
-    obj["category"] = "Music"
+    obj = podcast("Music", id, trim, num_episodes, 1.0)
     return obj
 
 def process_feed_api(last_run_timestamp, podcast_name, info):
@@ -164,8 +170,14 @@ def process_feed_api(last_run_timestamp, podcast_name, info):
     category_dir = os.path.join(usb_drive_base_dir, category)
     tmp_category_dir = os.path.join(TMP_DIR, category)
     num_episodes = info.get("num_episodes", 1)
+    force_latest = info.get("force_latest", 0)
 
-    feed = index.episodesByFeedId(feed_id, since=last_run_timestamp)
+    # If force_latest is set, get episodes regardless of timestamp
+    if force_latest > 0:
+        feed = index.episodesByFeedId(feed_id, since=0)  # Get all episodes
+        num_episodes = force_latest  # Override num_episodes with force_latest
+    else:
+        feed = index.episodesByFeedId(feed_id, since=last_run_timestamp)
 
     for i in range(num_episodes):
         if i >= len(feed["items"]):
@@ -183,7 +195,8 @@ def process_feed_api(last_run_timestamp, podcast_name, info):
         print(f"[{i+1}] Episode: {episode_title}")
         print(f"[{i+1}] Published: {publication_local_date_string}")
 
-        if publication_timestamp <= last_run_timestamp:
+        # Skip timestamp check if force_latest is enabled
+        if force_latest == 0 and publication_timestamp <= last_run_timestamp:
             print(f"\tSkipping episode published before last run")
             continue
 
@@ -209,23 +222,26 @@ def main(usb_drive_base_dir):
     # Dictionary mapping podcast names to their RSS feed URLs, categories, number of episodes to download, skip_first, skip_last, playback_speed
     # See: https://podcastindex.org/
     podcast_feeds = {
-        "FT News Briefing":             podcast_finance(73509,  [30, 80]),
-        "Goldman Sachs The Markets":    podcast_finance(6321730,[10, 25]),
-        "Unhedged":                     podcast_finance(6416251,[32, 45]),
-        "The Daily":                    podcast_finance(743229, [32, 30]),
-        "WSJ Whats News":               podcast_finance(491326, [20, 10]),
-        
-        "Ben Greenfield Life":                  podcast_biohack(310787, [315 ,30]),
+        "Ben Greenfield Life":                  podcast_biohack(310787,  [315 ,30]),
         "The Human Upgrade with Dave Asprey":   podcast_biohack(1031629, [150, 0]),
         "Huberman Lab":                         podcast_biohack(1365758, [120, 20]),
 
+        "FT News Briefing":             podcast_finance(73509,  [30, 90]),
+        "Goldman Sachs The Markets":    podcast_finance(6321730,[10, 30]),
+        "Unhedged":                     podcast_finance(6416251,[32, 45]),
+        "The Daily":                    podcast_finance(743229, [32, 45]),
+        "WSJ Whats News":               podcast_finance(491326, [20, 10]),
+        "Speaking of Alternatives":     podcast_finance(6879441,[20, 10]),
+        "Alt Goes Mainstream":          podcast_finance(1384568,[20, 10]),
+        #"Hot Money: Agent of Chaos":    podcast("Hot Money", 5464375, [20, 10], 1, 1.4, 1),
+
         "Heroic with Brian Johnson":    podcast_heroic(842919, [10, 0]),
-        "The Daily Dad":                podcast_heroic(743919, [90, 30]),
-        "The Daily Stoic":              podcast_heroic(404905, [34, 40]),
+        "The Daily Dad":                podcast_heroic(743919, [100, 30]),
+        "The Daily Stoic":              podcast_heroic(404905, [65, 40]),
 
         "Deep House Moscow":            podcast_music(1105989, [0, 0], 2),
-        "Heldeep Radio":                podcast_music(7021728, [45, 0], 1),
-        "Clublife Radio":               podcast_music(41388, [45, 0], 1),
+        "Heldeep Radio":                podcast_music(838482, [45, 0], 1),
+        "Clublife Radio":               podcast_music(41388,   [45, 0], 1),
     }
 
     last_run_timestamp = get_last_run_timestamp(usb_drive_base_dir)
@@ -252,6 +268,11 @@ def main(usb_drive_base_dir):
         for podcast_name, info in podcast_feeds.items():
             category = info["category"]
             num_episodes = info.get("num_episodes", 1)
+            force_latest = info.get("force_latest", 0)
+            
+            # Use force_latest if set, otherwise use num_episodes
+            episodes_to_keep = force_latest if force_latest > 0 else num_episodes
+            
             tmp_category_dir = os.path.join(TMP_DIR, category)
             category_dir = os.path.join(usb_drive_base_dir, category)
 
@@ -262,7 +283,7 @@ def main(usb_drive_base_dir):
                 dst = os.path.join(category_dir, filename)
                 shutil.move(src, dst)
 
-            delete_old_episodes(category_dir, podcast_name, num_episodes)
+            delete_old_episodes(category_dir, podcast_name, episodes_to_keep)
         
         shutil.rmtree(TMP_DIR)
 
