@@ -31,7 +31,6 @@ index = podcastindex.init(config)
 TMP_DIR = "/tmp/OpenSwim/"
 DEFAULT_USB_DRIVE_DIR = "/Volumes/OpenSwim/"
 FALLBACK_USB_DRIVE_DIR = "/Volumes/SWIMBUDS/"
-DEFAULT_OUTPUT_OVERRIDE_DIR = "/Volumes/WassClawShare/Podcasts/"
 LOCAL_TIMEZONE = pytz.timezone('America/New_York')
 
 def parse_args():
@@ -39,20 +38,14 @@ def parse_args():
     parser.add_argument(
         "--output-dir",
         dest="output_dir",
+        metavar="PATH",
         help="Override destination directory. Defaults to OpenSwim/SWIMBUDS behavior if omitted."
-    )
-    parser.add_argument(
-        "--daswassclaw",
-        action="store_true",
-        help=f"Shortcut for --output-dir {DEFAULT_OUTPUT_OVERRIDE_DIR}"
     )
     return parser.parse_args()
 
 def resolve_output_dir(args):
     if args.output_dir:
         return os.path.abspath(os.path.expanduser(args.output_dir))
-    if args.daswassclaw:
-        return DEFAULT_OUTPUT_OVERRIDE_DIR
     return None
 
 def print_mp3_duration(audio, num_tabs=0):

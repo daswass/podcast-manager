@@ -23,6 +23,4 @@ Notes:
 
 ```bash
 python podcastsToShokz.py --output-dir /Volumes/WassClawShare/Podcasts
-# or
-python podcastsToShokz.py --daswassclaw
 ```
