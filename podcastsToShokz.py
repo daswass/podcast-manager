@@ -1,5 +1,6 @@
 import requests
 import os
+import argparse
 from pydub import AudioSegment
 import time
 from datetime import datetime
@@ -28,7 +29,24 @@ config = {
 index = podcastindex.init(config)
 
 TMP_DIR = "/tmp/OpenSwim/"
+DEFAULT_USB_DRIVE_DIR = "/Volumes/OpenSwim/"
+FALLBACK_USB_DRIVE_DIR = "/Volumes/SWIMBUDS/"
 LOCAL_TIMEZONE = pytz.timezone('America/New_York')
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Download and process podcasts for OpenSwim or an override output path.")
+    parser.add_argument(
+        "--output-dir",
+        dest="output_dir",
+        metavar="PATH",
+        help="Override destination directory. Defaults to OpenSwim/SWIMBUDS behavior if omitted."
+    )
+    return parser.parse_args()
+
+def resolve_output_dir(args):
+    if args.output_dir:
+        return os.path.abspath(os.path.expanduser(args.output_dir))
+    return None
 
 def print_mp3_duration(audio, num_tabs=0):
     try:
@@ -221,10 +239,10 @@ def podcast_music(id, trim, num_episodes):
     obj = podcast("Music", id, trim, num_episodes, 1.0)
     return obj
 
-def process_feed_api(last_run_timestamp, podcast_name, info):
+def process_feed_api(last_run_timestamp, podcast_name, info, output_base_dir):
     feed_id = info["id"]
     category = info["category"]
-    category_dir = os.path.join(usb_drive_base_dir, category)
+    category_dir = os.path.join(output_base_dir, category)
     tmp_category_dir = os.path.join(TMP_DIR, category)
     num_episodes = info.get("num_episodes", 1)
     force_latest = info.get("force_latest", 0)
@@ -306,7 +324,7 @@ def validate_timestamp_logic(last_run_timestamp, current_timestamp):
     
     return time_diff > 0
 
-def main(usb_drive_base_dir):
+def main(output_base_dir):
     # Dictionary mapping podcast names to their RSS feed URLs, categories, number of episodes to download, skip_first, skip_last, playback_speed
     # See: https://podcastindex.org/
     podcast_definitions = [
@@ -324,6 +342,7 @@ def main(usb_drive_base_dir):
         ("Heroic with Brian Johnson",            lambda: podcast_heroic(842919, [10, 0])),
         ("The Daily Dad",                        lambda: podcast_heroic(743919, [100, 30])),
         ("The Daily Stoic",                      lambda: podcast_heroic(404905, [65, 40])),
+        ("Search Engine",                        lambda: podcast_finance(5220235, [0, 0])),
         ("Deep House Moscow",                    lambda: podcast_music(1105989, [0, 0], 2)),
         ("Heldeep Radio",                        lambda: podcast_music(838482,  [45, 0], 1)),
         ("Clublife Radio",                       lambda: podcast_music(41388,   [45, 0], 1)),
@@ -339,7 +358,7 @@ def main(usb_drive_base_dir):
             print(f"       Skipping this podcast and continuing with others...")
             continue
 
-    last_run_timestamp = get_last_run_timestamp(usb_drive_base_dir)
+    last_run_timestamp = get_last_run_timestamp(output_base_dir)
     current_timestamp = int(time.time())
     
     # Validate timestamp logic before processing
@@ -348,7 +367,7 @@ def main(usb_drive_base_dir):
     
     # Update timestamp BEFORE processing to ensure consistency
     # This prevents race conditions where episodes published during processing could be missed
-    update_last_run_timestamp(usb_drive_base_dir)
+    update_last_run_timestamp(output_base_dir)
     
     print(f"Processing podcasts since timestamp: {last_run_timestamp} ({datetime.fromtimestamp(last_run_timestamp, tz=pytz.UTC).astimezone(LOCAL_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')})")
     print(f"Current timestamp: {current_timestamp} ({datetime.fromtimestamp(current_timestamp, tz=pytz.UTC).astimezone(LOCAL_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')})")
@@ -367,15 +386,15 @@ def main(usb_drive_base_dir):
             os.makedirs(tmp_category_dir, exist_ok=True)
 
             #process_feed_direct(last_run_timestamp, podcast_name, info)
-            process_feed_api(last_run_timestamp, podcast_name, info)
+            process_feed_api(last_run_timestamp, podcast_name, info, output_base_dir)
         except Exception as e:
             print(f"\nERROR: Failed to process podcast '{podcast_name}': {e}")
             print(f"       Continuing with other podcasts...")
             continue
 
     # Move all downloaded and processed episodes to the USB drive
-    if os.path.exists(usb_drive_base_dir):
-        print(f"\nProcessing Complete. Copying latest Podcasts to Headphones ...")
+    if os.path.exists(output_base_dir):
+        print(f"\nProcessing Complete. Copying latest Podcasts to {output_base_dir} ...")
         for podcast_name, info in podcast_feeds.items():
             category = info["category"]
             num_episodes = info.get("num_episodes", 1)
@@ -385,7 +404,7 @@ def main(usb_drive_base_dir):
             episodes_to_keep = force_latest if force_latest > 0 else num_episodes
             
             tmp_category_dir = os.path.join(TMP_DIR, category)
-            category_dir = os.path.join(usb_drive_base_dir, category)
+            category_dir = os.path.join(output_base_dir, category)
 
             try:
                 os.makedirs(category_dir, exist_ok=True)
@@ -411,41 +430,53 @@ def main(usb_drive_base_dir):
 
         print("Podcast episodes organized and downloaded. Big Day!")
     else:
-        print("Error: USB drive not mounted. Please connect the USB drive and try again.")
+        print(f"Error: Output directory does not exist: {output_base_dir}")
 
-def wait_for_usb_drive(usb_base_drive_dir):
-    while not os.path.exists("/Volumes/OpenSwim/") and not os.path.exists("/Volumes/SWIMBUDS/"):
+def wait_for_usb_drive():
+    while not os.path.exists(DEFAULT_USB_DRIVE_DIR) and not os.path.exists(FALLBACK_USB_DRIVE_DIR):
         print("\rWaiting for USB drive{} ".format("." * ((int(time.time()) % 3) + 1)), end="", flush=True)
         time.sleep(1)
         print("\r" + " " * 50, end="", flush=True)  # Clear the line
-    
-    # Determine which drive is available
-    if os.path.exists("/Volumes/OpenSwim/"):
-        usb_base_drive_dir = "/Volumes/OpenSwim/"
-    elif os.path.exists("/Volumes/SWIMBUDS/"):
-        usb_base_drive_dir = "/Volumes/SWIMBUDS/"
-    
-    print("\rUSB drive is available at {}".format(usb_base_drive_dir))
-    main(usb_base_drive_dir)
+
+    if os.path.exists(DEFAULT_USB_DRIVE_DIR):
+        output_base_dir = DEFAULT_USB_DRIVE_DIR
+    else:
+        output_base_dir = FALLBACK_USB_DRIVE_DIR
+
+    print("\rUSB drive is available at {}".format(output_base_dir))
+    main(output_base_dir)
 
 if __name__ == "__main__":
-    # Check which USB drive is mounted (OpenSwim takes priority)
-    if os.path.exists("/Volumes/OpenSwim/"):
-        usb_drive_base_dir = "/Volumes/OpenSwim/"
-    elif os.path.exists("/Volumes/SWIMBUDS/"):
-        usb_drive_base_dir = "/Volumes/SWIMBUDS/"
-    else:
-        # Default to OpenSwim when waiting
-        usb_drive_base_dir = "/Volumes/OpenSwim/"
+    args = parse_args()
+    output_override_dir = resolve_output_dir(args)
 
-    if os.getuid() == 0:
+    if output_override_dir:
+        os.makedirs(output_override_dir, exist_ok=True)
+
         six_hours_ago = int(time.time()) - (3 * 60 * 60)
-        last_run_timestamp = get_last_run_timestamp(usb_drive_base_dir)
+        last_run_timestamp = get_last_run_timestamp(output_override_dir)
 
         if last_run_timestamp > six_hours_ago:
             last_run_date_string = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_run_timestamp))
             print(f"Skip run. Updated within the last 3 hours. Last run: {last_run_date_string}")
         else:
-            main(usb_drive_base_dir)
+            print(f"Using output override: {output_override_dir}")
+            main(output_override_dir)
+    elif os.getuid() == 0:
+        if os.path.exists(DEFAULT_USB_DRIVE_DIR):
+            output_base_dir = DEFAULT_USB_DRIVE_DIR
+        elif os.path.exists(FALLBACK_USB_DRIVE_DIR):
+            output_base_dir = FALLBACK_USB_DRIVE_DIR
+        else:
+            output_base_dir = DEFAULT_USB_DRIVE_DIR
+
+        six_hours_ago = int(time.time()) - (3 * 60 * 60)
+        last_run_timestamp = get_last_run_timestamp(output_base_dir)
+
+        if last_run_timestamp > six_hours_ago:
+            last_run_date_string = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_run_timestamp))
+            print(f"Skip run. Updated within the last 3 hours. Last run: {last_run_date_string}")
+        else:
+            main(output_base_dir)
     else:
-        wait_for_usb_drive(usb_drive_base_dir)
+        wait_for_usb_drive()

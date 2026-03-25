@@ -8,3 +8,5 @@ requests==2.31.0
 sgmllib3k==1.0.0
 urllib3==2.2.0
 python-podcastindex==1.14.0
+python-dotenv==1.2.2
+audioop-lts==0.2.2; python_version >= '3.13'
