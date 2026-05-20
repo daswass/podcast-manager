@@ -1,5 +1,6 @@
 import requests
 import os
+import unicodedata
 from pydub import AudioSegment
 import time
 from datetime import datetime
@@ -77,17 +78,35 @@ def update_last_run_timestamp(usb_drive_base_dir):
     
     return last_run
 
+def safe_episode_title(title):
+    """Normalize and strip characters that break exFAT/FAT32 or confuse macOS MSC volumes."""
+    title = unicodedata.normalize("NFC", title)
+    title = re.sub(r"[ /]", "_", title)
+    title = re.sub(r'[<>:"\\|?*]', "_", title)
+    title = re.sub(r"[\x00-\x1f]", "_", title)
+    title = title.rstrip(" .")
+    return title or "episode"
+
+
+def _episode_mtime_or_sentinel(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError as e:
+        print(f"\tWarning: Could not read mtime for {path} ({e}); pruning may be less accurate.")
+        return float("-inf")
+
+
 def delete_old_episodes(category_dir, podcast_name, num_episodes):
-    # Get a list of episode files in the category directory
     episode_files = glob.glob(os.path.join(category_dir, f"{podcast_name} - *"))
+    episode_files = [p for p in episode_files if os.path.isfile(p)]
+    episode_files.sort(key=_episode_mtime_or_sentinel)
 
-    # Sort the episode files by modification time (oldest first)
-    episode_files.sort(key=os.path.getmtime)
-
-    # If there are more episode files than the allowed number, delete the older ones
     while len(episode_files) > num_episodes:
         oldest_episode = episode_files.pop(0)
-        os.remove(oldest_episode)
+        try:
+            os.remove(oldest_episode)
+        except OSError as e:
+            print(f"\tWarning: Could not remove old episode {oldest_episode}: {e}")
 
 def trim_audio(episode_file_path, skip_first, skip_last):
     if skip_first > 0 or skip_last > 0:
@@ -221,7 +240,7 @@ def podcast_music(id, trim, num_episodes):
     obj = podcast("Music", id, trim, num_episodes, 1.0)
     return obj
 
-def process_feed_api(last_run_timestamp, podcast_name, info):
+def process_feed_api(usb_drive_base_dir, last_run_timestamp, podcast_name, info):
     feed_id = info["id"]
     category = info["category"]
     category_dir = os.path.join(usb_drive_base_dir, category)
@@ -250,7 +269,7 @@ def process_feed_api(last_run_timestamp, podcast_name, info):
             break  # If there are no more episodes in the feed, exit the loop
 
         episode = feed["items"][i]
-        episode_title = re.sub(r'[ /]', '_', episode["title"])
+        episode_title = safe_episode_title(episode["title"])
         episode_url = episode["enclosureUrl"]
         
         publication_timestamp = episode["datePublished"]
@@ -367,7 +386,7 @@ def main(usb_drive_base_dir):
             os.makedirs(tmp_category_dir, exist_ok=True)
 
             #process_feed_direct(last_run_timestamp, podcast_name, info)
-            process_feed_api(last_run_timestamp, podcast_name, info)
+            process_feed_api(usb_drive_base_dir, last_run_timestamp, podcast_name, info)
         except Exception as e:
             print(f"\nERROR: Failed to process podcast '{podcast_name}': {e}")
             print(f"       Continuing with other podcasts...")
@@ -402,10 +421,13 @@ def main(usb_drive_base_dir):
                     except (PermissionError, OSError, FileNotFoundError) as e:
                         print(f"\tWarning: Could not move {filename} to USB drive: {e}")
                         # Continue with other files even if one fails
+            except (PermissionError, OSError) as e:
+                print(f"\tWarning: Could not list or move files in {tmp_category_dir}: {e}")
 
+            try:
                 delete_old_episodes(category_dir, podcast_name, episodes_to_keep)
             except (PermissionError, OSError) as e:
-                print(f"\tWarning: Could not access files in {tmp_category_dir}: {e}")
+                print(f"\tWarning: Could not prune old episodes in {category_dir}: {e}")
         
         shutil.rmtree(TMP_DIR)
 
