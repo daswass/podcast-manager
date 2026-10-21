@@ -228,6 +228,10 @@ def podcast_finance(id, trim, num_episodes=1, speed=1.4):
     obj = podcast("Finance", id, trim, num_episodes, speed)
     return obj
 
+def podcast_news(id, trim, num_episodes=1, speed=1.4):
+    obj = podcast("News", id, trim, num_episodes, speed)
+    return obj
+
 def podcast_biohack(id, trim, num_episodes=1, speed=1.5):
     obj = podcast("BioHack", id, trim, num_episodes, speed)
     return obj
@@ -239,6 +243,33 @@ def podcast_heroic(id, trim, num_episodes=1, speed=1.0):
 def podcast_music(id, trim, num_episodes):
     obj = podcast("Music", id, trim, num_episodes, 1.0)
     return obj
+
+# Spotify's prefix hosts embed the real media URL in the path, then refuse
+# the connection. Strip them before download. Leave working trackers in place.
+_BROKEN_ENCLOSURE_MARKERS = (
+    "prfx.byspotify.com/e/",
+    "pscrb.fm/rss/p/",
+)
+
+
+def unwrap_enclosure_url(url):
+    if not url:
+        return url
+
+    changed = True
+    while changed:
+        changed = False
+        for marker in _BROKEN_ENCLOSURE_MARKERS:
+            index = url.find(marker)
+            if index != -1:
+                url = url[index + len(marker):]
+                changed = True
+                break
+
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    return "https://" + url.lstrip("/")
+
 
 def process_feed_api(usb_drive_base_dir, last_run_timestamp, podcast_name, info):
     feed_id = info["id"]
@@ -270,7 +301,7 @@ def process_feed_api(usb_drive_base_dir, last_run_timestamp, podcast_name, info)
 
         episode = feed["items"][i]
         episode_title = safe_episode_title(episode["title"])
-        episode_url = episode["enclosureUrl"]
+        episode_url = unwrap_enclosure_url(episode["enclosureUrl"])
         
         publication_timestamp = episode["datePublished"]
         publication_local_date_string = datetime.fromtimestamp(publication_timestamp, tz=pytz.UTC).astimezone(LOCAL_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')
@@ -339,6 +370,12 @@ def main(usb_drive_base_dir):
         ("WSJ Whats News",                       lambda: podcast_finance(491326, [20, 10])),
         ("Speaking of Alternatives",             lambda: podcast_finance(6879441,[20, 10])),
         ("Alt Goes Mainstream",                  lambda: podcast_finance(1384568,[20, 10])),
+        ("Hard Fork",                            lambda: podcast_news(1026613, [0, 0])),
+        ("The Intelligence",                     lambda: podcast_news(743611,  [0, 0])),
+        ("Freakonomics Radio",                   lambda: podcast_news(311840,  [0, 0])),
+        ("Up First",                             lambda: podcast_news(946759,  [0, 0])),
+        ("Paper Trail",                          lambda: podcast_news(7800276, [0, 0])),
+        ("Search Engine",                        lambda: podcast_news(5220235, [0, 0])),
         #("Hot Money: Agent of Chaos",            lambda: podcast("Hot Money", 5464375, [20, 10], 1, 1.4, 1)),
         ("Heroic with Brian Johnson",            lambda: podcast_heroic(842919, [10, 0])),
         ("The Daily Dad",                        lambda: podcast_heroic(743919, [100, 30])),
