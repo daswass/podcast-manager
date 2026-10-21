@@ -28,6 +28,25 @@ config = {
 }
 index = podcastindex.init(config)
 
+def configure_ffmpeg():
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        for candidate in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                ffmpeg_path = candidate
+                break
+
+    if not ffmpeg_path:
+        print("Warning: ffmpeg not found; playback speed changes will be skipped.")
+        return
+
+    AudioSegment.converter = ffmpeg_path
+    ffprobe_path = shutil.which("ffprobe") or ffmpeg_path.replace("ffmpeg", "ffprobe")
+    if os.path.isfile(ffprobe_path):
+        AudioSegment.ffprobe = ffprobe_path
+
+configure_ffmpeg()
+
 TMP_DIR = "/tmp/OpenSwim/"
 LOCAL_TIMEZONE = pytz.timezone('America/New_York')
 
@@ -77,6 +96,86 @@ def update_last_run_timestamp(usb_drive_base_dir):
             file2.write(str(int(time.time())))
     
     return last_run
+
+RUNNING_MARKER_NAME = "podcast_downloader_running.txt"
+TMP_RUNNING_MARKER = "/tmp/podcast_downloader_running.txt"
+
+def running_marker_path(usb_drive_base_dir):
+    return os.path.join(usb_drive_base_dir, RUNNING_MARKER_NAME)
+
+def _running_marker_pid(path):
+    try:
+        with open(path) as file:
+            for line in file:
+                line = line.strip()
+                if line.startswith("pid="):
+                    return int(line.split("=", 1)[1])
+    except (OSError, ValueError):
+        return None
+    return None
+
+def running_marker_is_stale(path):
+    if not os.path.exists(path):
+        return False
+
+    pid = _running_marker_pid(path)
+    if pid is None:
+        return True
+
+    try:
+        os.kill(pid, 0)
+        return False
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+
+def create_running_marker(usb_drive_base_dir):
+    started = datetime.now(LOCAL_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+    epoch = int(time.time())
+    pid = os.getpid()
+    content = f"started={started}\npid={pid}\nepoch={epoch}\n"
+    path = running_marker_path(usb_drive_base_dir)
+
+    try:
+        with open(path, "w") as file:
+            file.write(content)
+        print(f"Created running marker: {path}")
+        return
+    except (PermissionError, OSError) as e:
+        print(f"Warning: Could not create running marker on drive ({e}); using {TMP_RUNNING_MARKER}")
+
+    with open(TMP_RUNNING_MARKER, "w") as file:
+        file.write(content)
+
+def remove_running_marker(usb_drive_base_dir):
+    for path in (running_marker_path(usb_drive_base_dir), TMP_RUNNING_MARKER):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"Warning: Could not remove running marker {path}: {e}")
+
+def acquire_running_marker(usb_drive_base_dir):
+    path = running_marker_path(usb_drive_base_dir)
+    if os.path.exists(path):
+        if running_marker_is_stale(path):
+            print("Removing stale podcast_downloader_running.txt")
+            remove_running_marker(usb_drive_base_dir)
+        else:
+            print("Podcast updater already running (podcast_downloader_running.txt on drive).")
+            return False
+
+    if os.path.exists(TMP_RUNNING_MARKER):
+        if running_marker_is_stale(TMP_RUNNING_MARKER):
+            remove_running_marker(usb_drive_base_dir)
+        else:
+            print("Podcast updater already running (podcast_downloader_running.txt in /tmp).")
+            return False
+
+    create_running_marker(usb_drive_base_dir)
+    return True
 
 def safe_episode_title(title):
     """Normalize and strip characters that break exFAT/FAT32 or confuse macOS MSC volumes."""
@@ -135,8 +234,8 @@ def squeeze_audio(episode_file_path, playback_speed):
             
             squeezed_audio = AudioSegment.from_mp3(episode_file_path)
             print_mp3_duration(squeezed_audio, num_tabs=2)
-        except:
-            print("Failed to squeeze audio")
+        except Exception as e:
+            print(f"\tFailed to squeeze audio: {e}")
 
 def process_audio(info, episode_file_path):
     audio = AudioSegment.from_mp3(episode_file_path)
@@ -357,6 +456,15 @@ def validate_timestamp_logic(last_run_timestamp, current_timestamp):
     return time_diff > 0
 
 def main(usb_drive_base_dir):
+    if not acquire_running_marker(usb_drive_base_dir):
+        return
+
+    try:
+        _run_podcast_update(usb_drive_base_dir)
+    finally:
+        remove_running_marker(usb_drive_base_dir)
+
+def _run_podcast_update(usb_drive_base_dir):
     # Dictionary mapping podcast names to their RSS feed URLs, categories, number of episodes to download, skip_first, skip_last, playback_speed
     # See: https://podcastindex.org/
     podcast_definitions = [
@@ -401,10 +509,6 @@ def main(usb_drive_base_dir):
     # Validate timestamp logic before processing
     if not validate_timestamp_logic(last_run_timestamp, current_timestamp):
         print("WARNING: Timestamp validation failed. Consider resetting last_run_timestamp.")
-    
-    # Update timestamp BEFORE processing to ensure consistency
-    # This prevents race conditions where episodes published during processing could be missed
-    update_last_run_timestamp(usb_drive_base_dir)
     
     print(f"Processing podcasts since timestamp: {last_run_timestamp} ({datetime.fromtimestamp(last_run_timestamp, tz=pytz.UTC).astimezone(LOCAL_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')})")
     print(f"Current timestamp: {current_timestamp} ({datetime.fromtimestamp(current_timestamp, tz=pytz.UTC).astimezone(LOCAL_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')})")
@@ -468,6 +572,7 @@ def main(usb_drive_base_dir):
         
         shutil.rmtree(TMP_DIR)
 
+        update_last_run_timestamp(usb_drive_base_dir)
         print("Podcast episodes organized and downloaded. Big Day!")
     else:
         print("Error: USB drive not mounted. Please connect the USB drive and try again.")
