@@ -484,6 +484,7 @@ def _run_podcast_update(usb_drive_base_dir):
         ("Up First",                             lambda: podcast_news(946759,  [0, 0])),
         ("Paper Trail",                          lambda: podcast_news(7800276, [0, 0])),
         ("Search Engine",                        lambda: podcast_news(5220235, [0, 0])),
+        ("Machine Gods",                         lambda: podcast_news(8037119, [0, 0])),
         #("Hot Money: Agent of Chaos",            lambda: podcast("Hot Money", 5464375, [20, 10], 1, 1.4, 1)),
         ("Heroic with Brian Johnson",            lambda: podcast_heroic(842919, [10, 0])),
         ("The Daily Dad",                        lambda: podcast_heroic(743919, [100, 30])),
