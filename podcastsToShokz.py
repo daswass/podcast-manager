@@ -1,6 +1,9 @@
+import argparse
+import json
 import requests
 import os
 import unicodedata
+from pathlib import Path
 from pydub import AudioSegment
 import time
 from datetime import datetime
@@ -8,6 +11,13 @@ import shutil
 import glob
 import re
 import pytz
+
+from ad_detect import chapter_spans, choose_cut_spans, classify_transcript, tighten_spans
+from ad_model import complete_ad_prompt
+from ad_slices import cut_ads, find_ad_spans
+from episode_ledger import EpisodeLedger, refresh_needs_copy, support_dir
+from episode_pipeline import run_prepare, run_sync
+from whisper_transcribe import transcribe_episode
 
 import ssl
 try:
@@ -28,7 +38,25 @@ config = {
 }
 index = podcastindex.init(config)
 
-TMP_DIR = "/tmp/OpenSwim/"
+def configure_ffmpeg():
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        for candidate in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                ffmpeg_path = candidate
+                break
+
+    if not ffmpeg_path:
+        print("Warning: ffmpeg not found; playback speed changes will be skipped.")
+        return
+
+    AudioSegment.converter = ffmpeg_path
+    ffprobe_path = shutil.which("ffprobe") or ffmpeg_path.replace("ffmpeg", "ffprobe")
+    if os.path.isfile(ffprobe_path):
+        AudioSegment.ffprobe = ffprobe_path
+
+configure_ffmpeg()
+
 LOCAL_TIMEZONE = pytz.timezone('America/New_York')
 
 def print_mp3_duration(audio, num_tabs=0):
@@ -77,6 +105,86 @@ def update_last_run_timestamp(usb_drive_base_dir):
             file2.write(str(int(time.time())))
     
     return last_run
+
+RUNNING_MARKER_NAME = "podcast_downloader_running.txt"
+TMP_RUNNING_MARKER = "/tmp/podcast_downloader_running.txt"
+
+def running_marker_path(usb_drive_base_dir):
+    return os.path.join(usb_drive_base_dir, RUNNING_MARKER_NAME)
+
+def _running_marker_pid(path):
+    try:
+        with open(path) as file:
+            for line in file:
+                line = line.strip()
+                if line.startswith("pid="):
+                    return int(line.split("=", 1)[1])
+    except (OSError, ValueError):
+        return None
+    return None
+
+def running_marker_is_stale(path):
+    if not os.path.exists(path):
+        return False
+
+    pid = _running_marker_pid(path)
+    if pid is None:
+        return True
+
+    try:
+        os.kill(pid, 0)
+        return False
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+
+def create_running_marker(usb_drive_base_dir):
+    started = datetime.now(LOCAL_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+    epoch = int(time.time())
+    pid = os.getpid()
+    content = f"started={started}\npid={pid}\nepoch={epoch}\n"
+    path = running_marker_path(usb_drive_base_dir)
+
+    try:
+        with open(path, "w") as file:
+            file.write(content)
+        print(f"Created running marker: {path}")
+        return
+    except (PermissionError, OSError) as e:
+        print(f"Warning: Could not create running marker on drive ({e}); using {TMP_RUNNING_MARKER}")
+
+    with open(TMP_RUNNING_MARKER, "w") as file:
+        file.write(content)
+
+def remove_running_marker(usb_drive_base_dir):
+    for path in (running_marker_path(usb_drive_base_dir), TMP_RUNNING_MARKER):
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"Warning: Could not remove running marker {path}: {e}")
+
+def acquire_running_marker(usb_drive_base_dir):
+    path = running_marker_path(usb_drive_base_dir)
+    if os.path.exists(path):
+        if running_marker_is_stale(path):
+            print("Removing stale podcast_downloader_running.txt")
+            remove_running_marker(usb_drive_base_dir)
+        else:
+            print("Podcast updater already running (podcast_downloader_running.txt on drive).")
+            return False
+
+    if os.path.exists(TMP_RUNNING_MARKER):
+        if running_marker_is_stale(TMP_RUNNING_MARKER):
+            remove_running_marker(usb_drive_base_dir)
+        else:
+            print("Podcast updater already running (podcast_downloader_running.txt in /tmp).")
+            return False
+
+    create_running_marker(usb_drive_base_dir)
+    return True
 
 def safe_episode_title(title):
     """Normalize and strip characters that break exFAT/FAT32 or confuse macOS MSC volumes."""
@@ -135,10 +243,10 @@ def squeeze_audio(episode_file_path, playback_speed):
             
             squeezed_audio = AudioSegment.from_mp3(episode_file_path)
             print_mp3_duration(squeezed_audio, num_tabs=2)
-        except:
-            print("Failed to squeeze audio")
+        except Exception as e:
+            print(f"\tFailed to squeeze audio: {e}")
 
-def process_audio(info, episode_file_path):
+def process_audio(info, episode_file_path, apply_trim=True):
     audio = AudioSegment.from_mp3(episode_file_path)
     print_mp3_duration(audio)
     
@@ -146,30 +254,9 @@ def process_audio(info, episode_file_path):
     skip_last = info.get("skip_last", 0)  # Default to 0 if not specified
     playback_speed = info.get("playback_speed", 1.0)  # Default to normal speed (1.0)
 
-    trim_audio(episode_file_path, skip_first, skip_last)
+    if apply_trim:
+        trim_audio(episode_file_path, skip_first, skip_last)
     squeeze_audio(episode_file_path, playback_speed)
-
-def validate_timestamp_logic(last_run_timestamp, current_timestamp):
-    """Validate and debug timestamp logic to help identify issues"""
-    last_run_date = datetime.fromtimestamp(last_run_timestamp, tz=pytz.UTC).astimezone(LOCAL_TIMEZONE)
-    current_date = datetime.fromtimestamp(current_timestamp, tz=pytz.UTC).astimezone(LOCAL_TIMEZONE)
-    
-    time_diff = current_timestamp - last_run_timestamp
-    hours_diff = time_diff / 3600
-    
-    print(f"Timestamp Validation:")
-    print(f"  Last run: {last_run_timestamp} ({last_run_date.strftime('%Y-%m-%d %H:%M:%S')})")
-    print(f"  Current:  {current_timestamp} ({current_date.strftime('%Y-%m-%d %H:%M:%S')})")
-    print(f"  Difference: {time_diff} seconds ({hours_diff:.2f} hours)")
-    
-    if time_diff < 0:
-        print(f"  WARNING: Last run timestamp is in the future! This could cause issues.")
-    elif time_diff == 0:
-        print(f"  WARNING: Timestamps are identical. This could cause episodes to be missed.")
-    elif time_diff < 60:
-        print(f"  WARNING: Very short time difference ({time_diff}s). Episodes might be missed.")
-    
-    return time_diff > 0
 
 def retry_api_call(func, *args, max_retries=3, initial_delay=1, **kwargs):
     """Retry an API call with exponential backoff"""
@@ -228,6 +315,10 @@ def podcast_finance(id, trim, num_episodes=1, speed=1.4):
     obj = podcast("Finance", id, trim, num_episodes, speed)
     return obj
 
+def podcast_news(id, trim, num_episodes=1, speed=1.4):
+    obj = podcast("News", id, trim, num_episodes, speed)
+    return obj
+
 def podcast_biohack(id, trim, num_episodes=1, speed=1.5):
     obj = podcast("BioHack", id, trim, num_episodes, speed)
     return obj
@@ -238,94 +329,200 @@ def podcast_heroic(id, trim, num_episodes=1, speed=1.0):
 
 def podcast_music(id, trim, num_episodes):
     obj = podcast("Music", id, trim, num_episodes, 1.0)
+    obj["slice"] = False
     return obj
 
-def process_feed_api(usb_drive_base_dir, last_run_timestamp, podcast_name, info):
-    feed_id = info["id"]
-    category = info["category"]
-    category_dir = os.path.join(usb_drive_base_dir, category)
-    tmp_category_dir = os.path.join(TMP_DIR, category)
-    num_episodes = info.get("num_episodes", 1)
-    force_latest = info.get("force_latest", 0)
+# Spotify's prefix hosts embed the real media URL in the path, then refuse
+# the connection. Strip them before download. Leave working trackers in place.
+_BROKEN_ENCLOSURE_MARKERS = (
+    "prfx.byspotify.com/e/",
+    "pscrb.fm/rss/p/",
+)
 
-    # If force_latest is set, get episodes regardless of timestamp
-    if force_latest > 0:
-        feed = retry_api_call(index.episodesByFeedId, feed_id, since=0, max_results=max(force_latest, 50))  # Get more episodes than needed
-        num_episodes = force_latest  # Override num_episodes with force_latest
+
+def unwrap_enclosure_url(url):
+    if not url:
+        return url
+
+    changed = True
+    while changed:
+        changed = False
+        for marker in _BROKEN_ENCLOSURE_MARKERS:
+            index = url.find(marker)
+            if index != -1:
+                url = url[index + len(marker):]
+                changed = True
+                break
+
+    if url.startswith("http://") or url.startswith("https://"):
+        return url
+    return "https://" + url.lstrip("/")
+
+
+def episode_filename(podcast_name, episode):
+    return f"{podcast_name} - {safe_episode_title(episode.get('title') or 'episode')}.mp3"
+
+
+def original_episode_path(support, info, episode):
+    return support / "originals" / str(info["id"]) / f"{episode['id']}.mp3"
+
+
+def sliced_episode_path(support, podcast_name, info, episode):
+    return support / "sliced" / info["category"] / episode_filename(podcast_name, episode)
+
+
+def trimmed_episode_path(support, podcast_name, info, episode):
+    return support / "trimmed" / info["category"] / episode_filename(podcast_name, episode)
+
+
+def drive_episode_path(drive_root, podcast_name, info, episode):
+    return os.path.join(drive_root, info["category"], episode_filename(podcast_name, episode))
+
+
+# Acast answers the requests library's default client with 403 and an HTML
+# block page. Any other client name is sent through to the mp3.
+_DOWNLOAD_HEADERS = {"User-Agent": "podcast-manager"}
+
+
+def download_episode_file(url, dest_path):
+    dest = Path(dest_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    unwrapped = unwrap_enclosure_url(url)
+    with requests.get(unwrapped, timeout=120, stream=True, headers=_DOWNLOAD_HEADERS) as response:
+        response.raise_for_status()
+        with dest.open("wb") as handle:
+            for chunk in response.iter_content(1024 * 256):
+                if chunk:
+                    handle.write(chunk)
+    if dest.stat().st_size < 1024:
+        dest.unlink(missing_ok=True)
+        raise ValueError(f"Downloaded file is too small: {unwrapped}")
+
+
+def load_episode_chapters(episode):
+    url = episode.get("chaptersUrl")
+    if not url:
+        return []
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    payload = response.json()
+    if isinstance(payload, list):
+        return payload
+    return payload.get("chapters") or []
+
+
+def render_sliced_episode(info, source_path, dest_path, segments):
+    dest = Path(dest_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    audio = AudioSegment.from_mp3(source_path)
+    audio_seconds = len(audio) / 1000
+    publisher = chapter_spans(info.get("chapters") or [], audio_seconds)
+    phrase_spans = find_ad_spans(segments)
+    model_spans = None
+    if segments:
+        try:
+            model_spans = classify_transcript(segments, audio_seconds, complete_ad_prompt)
+        except Exception as error:
+            print(f"\tAd model unavailable: {error}")
+    if model_spans is None:
+        print("\tPhrase matches are the fallback")
     else:
-        # Increase max_results to ensure we don't miss episodes due to API limits
-        feed = retry_api_call(index.episodesByFeedId, feed_id, since=last_run_timestamp, max_results=max(num_episodes * 2, 50))
+        print(f"\tAd model marked {len(model_spans)} span(s)")
+    spans = tighten_spans(audio, choose_cut_spans(phrase_spans, model_spans, publisher))
+    if spans:
+        # The fixed skip_first/skip_last values target the same pre-roll and
+        # post-roll. Applying them after a detected cut would remove the show.
+        print(f"\tRemoving {len(spans)} ad span(s)")
+        cut_ads(audio, spans).export(str(dest), format="mp3")
+        process_audio(info, str(dest), apply_trim=False)
+    else:
+        print("\tNo ad spans found; using the fixed trim and speed")
+        shutil.copy(source_path, dest)
+        process_audio(info, str(dest), apply_trim=True)
+    return audio_seconds
 
-    # Check if feed response is valid
-    if not feed or "items" not in feed or not feed["items"]:
-        print(f"\tNo episodes found in feed response")
-        return
 
-    print(f"\tFound {len(feed['items'])} episodes in feed")
+def render_trimmed_episode(info, source_path, dest_path):
+    dest = Path(dest_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(source_path, dest)
+    process_audio(info, str(dest), apply_trim=True)
 
-    for i in range(num_episodes):
-        if i >= len(feed["items"]):
-            print(f"\tNo more episodes available (requested {num_episodes}, got {len(feed['items'])})")
-            break  # If there are no more episodes in the feed, exit the loop
 
-        episode = feed["items"][i]
-        episode_title = safe_episode_title(episode["title"])
-        episode_url = episode["enclosureUrl"]
-        
-        publication_timestamp = episode["datePublished"]
-        publication_local_date_string = datetime.fromtimestamp(publication_timestamp, tz=pytz.UTC).astimezone(LOCAL_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')
+def copy_to_drive(src, dst):
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.exists(dst):
+        src_stat = os.stat(src)
+        dst_stat = os.stat(dst)
+        if dst_stat.st_size == src_stat.st_size and dst_stat.st_mtime >= src_stat.st_mtime:
+            return
+    shutil.copy2(src, dst)
 
-        print(f"[{i+1}] Episode: {episode_title}")
-        print(f"[{i+1}] Published: {publication_local_date_string}")
 
-        # Skip timestamp check if force_latest is enabled
-        if force_latest == 0 and publication_timestamp <= last_run_timestamp:
-            print(f"\tSkipping episode published before last run ({publication_timestamp} <= {last_run_timestamp})")
-            continue
+def append_timing(row):
+    path = support_dir() / "timing.jsonl"
+    with path.open("a") as handle:
+        handle.write(json.dumps(row) + "\n")
+    print(
+        f"\tTiming: audio {row['audio_seconds']:.0f}s, "
+        f"transcribe {row['transcribe_seconds']:.1f}s, "
+        f"slice {row['slice_seconds']:.1f}s"
+    )
 
-        episode_file_path = os.path.join(category_dir, f"{podcast_name} - {episode_title}.mp3")
-        tmp_episode_file_path = os.path.join(tmp_category_dir, f"{podcast_name} - {episode_title}.mp3")
 
-        if os.path.exists(episode_file_path) or os.path.exists(tmp_episode_file_path):
-            print(f"\tSkip. Already downloaded.")
-        else:
-            response = requests.get(episode_url)
-            if response.status_code == 200:
-                with open(tmp_episode_file_path, "wb") as f:
-                    f.write(response.content)
-                    
-                    file_size = os.path.getsize(tmp_episode_file_path)
-                    if file_size < 1024:
-                        print(f"\tFile size [{file_size} bytes] too small: Skipping")
-                        continue
+def fetch_latest_episodes(info):
+    count = info.get("force_latest") or info.get("num_episodes", 1)
+    feed = retry_api_call(index.episodesByFeedId, info["id"], max_results=max(count, 1))
+    items = (feed or {}).get("items") or []
+    return items[:count]
 
-                process_audio(info, tmp_episode_file_path)
-            else:
-                print(f"\tFailed to download episode: HTTP {response.status_code}")
 
-def validate_timestamp_logic(last_run_timestamp, current_timestamp):
-    """Validate and debug timestamp logic to help identify issues"""
-    last_run_date = datetime.fromtimestamp(last_run_timestamp, tz=pytz.UTC).astimezone(LOCAL_TIMEZONE)
-    current_date = datetime.fromtimestamp(current_timestamp, tz=pytz.UTC).astimezone(LOCAL_TIMEZONE)
-    
-    time_diff = current_timestamp - last_run_timestamp
-    hours_diff = time_diff / 3600
-    
-    print(f"Timestamp Validation:")
-    print(f"  Last run: {last_run_timestamp} ({last_run_date.strftime('%Y-%m-%d %H:%M:%S')})")
-    print(f"  Current:  {current_timestamp} ({current_date.strftime('%Y-%m-%d %H:%M:%S')})")
-    print(f"  Difference: {time_diff} seconds ({hours_diff:.2f} hours)")
-    
-    if time_diff < 0:
-        print(f"  WARNING: Last run timestamp is in the future! This could cause issues.")
-    elif time_diff == 0:
-        print(f"  WARNING: Timestamps are identical. This could cause episodes to be missed.")
-    elif time_diff < 60:
-        print(f"  WARNING: Very short time difference ({time_diff}s). Episodes might be missed.")
-    
-    return time_diff > 0
+def _sync_dependencies(support, drive_root):
+    return {
+        "fetch_episodes": fetch_latest_episodes,
+        "download": download_episode_file,
+        "render_trimmed": render_trimmed_episode,
+        "copy_file": copy_to_drive,
+        "prune": delete_old_episodes,
+        "original_path": lambda info, episode: original_episode_path(support, info, episode),
+        "trimmed_path": lambda info, episode: trimmed_episode_path(support, info["podcast_name"], info, episode),
+        "sliced_path": lambda info, episode: sliced_episode_path(support, info["podcast_name"], info, episode),
+        "drive_path": lambda info, episode: drive_episode_path(drive_root, info["podcast_name"], info, episode),
+        "safe_title": safe_episode_title,
+    }
+
+
+def _prepare_dependencies(support):
+    return {
+        "fetch_episodes": fetch_latest_episodes,
+        "download": download_episode_file,
+        "transcribe": transcribe_episode,
+        "load_chapters": load_episode_chapters,
+        "render_sliced": render_sliced_episode,
+        "render_trimmed": render_trimmed_episode,
+        "original_path": lambda info, episode: original_episode_path(support, info, episode),
+        "sliced_path": lambda info, episode: sliced_episode_path(support, info["podcast_name"], info, episode),
+        "trimmed_path": lambda info, episode: trimmed_episode_path(support, info["podcast_name"], info, episode),
+        "record_timing": append_timing,
+        "safe_title": safe_episode_title,
+    }
+
 
 def main(usb_drive_base_dir):
+    support = str(support_dir())
+    if not acquire_running_marker(support):
+        return
+    if not acquire_running_marker(usb_drive_base_dir):
+        remove_running_marker(support)
+        return
+
+    try:
+        _run_podcast_update(usb_drive_base_dir)
+    finally:
+        remove_running_marker(usb_drive_base_dir)
+        remove_running_marker(support)
+
+def load_podcast_feeds():
     # Dictionary mapping podcast names to their RSS feed URLs, categories, number of episodes to download, skip_first, skip_last, playback_speed
     # See: https://podcastindex.org/
     podcast_definitions = [
@@ -339,6 +536,13 @@ def main(usb_drive_base_dir):
         ("WSJ Whats News",                       lambda: podcast_finance(491326, [20, 10])),
         ("Speaking of Alternatives",             lambda: podcast_finance(6879441,[20, 10])),
         ("Alt Goes Mainstream",                  lambda: podcast_finance(1384568,[20, 10])),
+        ("Hard Fork",                            lambda: podcast_news(1026613, [0, 0])),
+        ("The Intelligence",                     lambda: podcast_news(743611,  [0, 0])),
+        ("Freakonomics Radio",                   lambda: podcast_news(311840,  [0, 0])),
+        ("Up First",                             lambda: podcast_news(946759,  [0, 0])),
+        ("Paper Trail",                          lambda: podcast_news(7800276, [0, 0])),
+        ("Search Engine",                        lambda: podcast_news(5220235, [0, 0])),
+        ("Machine Gods",                         lambda: podcast_news(8037119, [0, 0])),
         #("Hot Money: Agent of Chaos",            lambda: podcast("Hot Money", 5464375, [20, 10], 1, 1.4, 1)),
         ("Heroic with Brian Johnson",            lambda: podcast_heroic(842919, [10, 0])),
         ("The Daily Dad",                        lambda: podcast_heroic(743919, [100, 30])),
@@ -348,92 +552,48 @@ def main(usb_drive_base_dir):
         ("Clublife Radio",                       lambda: podcast_music(41388,   [45, 0], 1)),
     ]
     
-    # Build podcast_feeds dictionary with error handling
-    podcast_feeds = {}
+    feeds = []
     for podcast_name, podcast_func in podcast_definitions:
         try:
-            podcast_feeds[podcast_name] = podcast_func()
+            feeds.append((podcast_name, podcast_func()))
         except Exception as e:
             print(f"ERROR: Failed to initialize podcast '{podcast_name}': {e}")
             print(f"       Skipping this podcast and continuing with others...")
             continue
+    return feeds
 
-    last_run_timestamp = get_last_run_timestamp(usb_drive_base_dir)
-    current_timestamp = int(time.time())
-    
-    # Validate timestamp logic before processing
-    if not validate_timestamp_logic(last_run_timestamp, current_timestamp):
-        print("WARNING: Timestamp validation failed. Consider resetting last_run_timestamp.")
-    
-    # Update timestamp BEFORE processing to ensure consistency
-    # This prevents race conditions where episodes published during processing could be missed
-    update_last_run_timestamp(usb_drive_base_dir)
-    
-    print(f"Processing podcasts since timestamp: {last_run_timestamp} ({datetime.fromtimestamp(last_run_timestamp, tz=pytz.UTC).astimezone(LOCAL_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')})")
-    print(f"Current timestamp: {current_timestamp} ({datetime.fromtimestamp(current_timestamp, tz=pytz.UTC).astimezone(LOCAL_TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')})")
-
-    for podcast_name, info in podcast_feeds.items():
-        try:
-            feed_id = info["id"]
-            feed_url = info["url"]
-            category = info["category"]
-            tmp_category_dir = os.path.join(TMP_DIR, category)
-            
-            print(f"\nPodcast: [{feed_id}] {podcast_name}")
-            print(f"URL: {feed_url}")
-
-            # Create the category directory if it doesn't exist
-            os.makedirs(tmp_category_dir, exist_ok=True)
-
-            #process_feed_direct(last_run_timestamp, podcast_name, info)
-            process_feed_api(usb_drive_base_dir, last_run_timestamp, podcast_name, info)
-        except Exception as e:
-            print(f"\nERROR: Failed to process podcast '{podcast_name}': {e}")
-            print(f"       Continuing with other podcasts...")
-            continue
-
-    # Move all downloaded and processed episodes to the USB drive
-    if os.path.exists(usb_drive_base_dir):
-        print(f"\nProcessing Complete. Copying latest Podcasts to Headphones ...")
-        for podcast_name, info in podcast_feeds.items():
-            category = info["category"]
-            num_episodes = info.get("num_episodes", 1)
-            force_latest = info.get("force_latest", 0)
-            
-            # Use force_latest if set, otherwise use num_episodes
-            episodes_to_keep = force_latest if force_latest > 0 else num_episodes
-            
-            tmp_category_dir = os.path.join(TMP_DIR, category)
-            category_dir = os.path.join(usb_drive_base_dir, category)
-
-            try:
-                os.makedirs(category_dir, exist_ok=True)
-            except (PermissionError, OSError) as e:
-                print(f"\tWarning: Could not create directory {category_dir}: {e}")
-                continue  # Skip this category if we can't create the directory
-
-            try:
-                for filename in os.listdir(tmp_category_dir):
-                    src = os.path.join(tmp_category_dir, filename)
-                    dst = os.path.join(category_dir, filename)
-                    try:
-                        shutil.move(src, dst)
-                    except (PermissionError, OSError, FileNotFoundError) as e:
-                        print(f"\tWarning: Could not move {filename} to USB drive: {e}")
-                        # Continue with other files even if one fails
-            except (PermissionError, OSError) as e:
-                print(f"\tWarning: Could not list or move files in {tmp_category_dir}: {e}")
-
-            try:
-                delete_old_episodes(category_dir, podcast_name, episodes_to_keep)
-            except (PermissionError, OSError) as e:
-                print(f"\tWarning: Could not prune old episodes in {category_dir}: {e}")
-        
-        shutil.rmtree(TMP_DIR)
-
-        print("Podcast episodes organized and downloaded. Big Day!")
-    else:
+def _run_podcast_update(usb_drive_base_dir):
+    if not os.path.exists(usb_drive_base_dir):
         print("Error: USB drive not mounted. Please connect the USB drive and try again.")
+        return
+
+    feeds = load_podcast_feeds()
+    support = support_dir()
+    ledger = EpisodeLedger(support / "ledger.json")
+    print("Copying ready episodes and downloading anything not prepared yet...")
+    try:
+        run_sync(usb_drive_base_dir, feeds, ledger, _sync_dependencies(support, usb_drive_base_dir))
+    finally:
+        refresh_needs_copy(ledger, support / "needs_copy")
+    update_last_run_timestamp(usb_drive_base_dir)
+    print("Podcast episodes organized and downloaded. Big Day!")
+
+def prepare_main():
+    support = support_dir()
+    if not acquire_running_marker(str(support)):
+        return
+
+    try:
+        feeds = load_podcast_feeds()
+        ledger = EpisodeLedger(support / "ledger.json")
+        print("Preparing episodes. This transcribes and slices; it does not need the headphones.")
+        try:
+            run_prepare(feeds, ledger, _prepare_dependencies(support))
+        finally:
+            refresh_needs_copy(ledger, support / "needs_copy")
+        print("Nightly prepare finished.")
+    finally:
+        remove_running_marker(str(support))
 
 def wait_for_usb_drive(usb_base_drive_dir):
     while not os.path.exists("/Volumes/OpenSwim/") and not os.path.exists("/Volumes/SWIMBUDS/"):
@@ -451,6 +611,13 @@ def wait_for_usb_drive(usb_base_drive_dir):
     main(usb_base_drive_dir)
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Download podcasts for SWIMBUDS")
+    parser.add_argument("--prepare", action="store_true", help="Download, transcribe, and slice without the headphones")
+    args = parser.parse_args()
+    if args.prepare:
+        prepare_main()
+        raise SystemExit(0)
+
     # Check which USB drive is mounted (OpenSwim takes priority)
     if os.path.exists("/Volumes/OpenSwim/"):
         usb_drive_base_dir = "/Volumes/OpenSwim/"

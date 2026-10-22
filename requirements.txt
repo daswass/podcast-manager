@@ -8,3 +8,5 @@ requests==2.31.0
 sgmllib3k==1.0.0
 urllib3==2.2.0
 python-podcastindex==1.14.0
+mlx-whisper==0.4.3
+mlx-lm==0.32.2
