@@ -1,6 +1,9 @@
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from podcastsToShokz import unwrap_enclosure_url
+from podcastsToShokz import download_episode_file, unwrap_enclosure_url
 
 BEN_GREENFIELD = (
     "https://mgln.ai/e/p1606/prfx.byspotify.com/e/pscrb.fm/rss/p/"
@@ -41,6 +44,19 @@ class UnwrapEnclosureUrlTest(unittest.TestCase):
     def test_direct_media_url_is_unchanged(self):
         url = "https://traffic.megaphone.fm/SCIM2817913031.mp3"
         self.assertEqual(unwrap_enclosure_url(url), url)
+
+    def test_download_identifies_itself_so_acast_returns_audio(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "episode.mp3"
+            response = MagicMock()
+            response.iter_content.return_value = [b"a" * 2048]
+            response.__enter__.return_value = response
+            with patch("podcastsToShokz.requests.get", return_value=response) as get:
+                download_episode_file("https://sphinx.acast.com/p/acast/s/show/e/episode/media.mp3", dest)
+            headers = get.call_args.kwargs["headers"]
+            self.assertNotIn("python-requests", headers["User-Agent"])
+            self.assertTrue(headers["User-Agent"])
+            self.assertEqual(dest.read_bytes(), b"a" * 2048)
 
     def test_spotify_prefix_without_pscrb_is_removed(self):
         url = "https://prfx.byspotify.com/e/traffic.omny.fm/d/clips/audio.mp3"

@@ -12,6 +12,8 @@ LOCK_DIR="/tmp/podcast-swimbuds-updater.lock.d"
 LOG_FILE="/tmp/podcast-swimbuds-updater.log"
 RUNNING_MARKER="${VOLUME}/podcast_downloader_running.txt"
 TMP_RUNNING_MARKER="/tmp/podcast_downloader_running.txt"
+SUPPORT_MARKER="${HOME}/Library/Application Support/podcast-manager/podcast_downloader_running.txt"
+NEEDS_COPY="${HOME}/Library/Application Support/podcast-manager/needs_copy"
 MIN_INTERVAL_SECONDS=$((3 * 60 * 60))
 
 # launchd only provides /usr/bin:/bin:/usr/sbin:/sbin — ffmpeg lives in Homebrew.
@@ -86,7 +88,7 @@ clear_stale_running_marker() {
 check_running_marker() {
     local path
 
-    for path in "${RUNNING_MARKER}" "${TMP_RUNNING_MARKER}"; do
+    for path in "${RUNNING_MARKER}" "${TMP_RUNNING_MARKER}" "${SUPPORT_MARKER}"; do
         if [[ ! -f "${path}" ]]; then
             continue
         fi
@@ -143,8 +145,12 @@ fi
 
 now="$(date +%s)"
 if (( last_run > now - MIN_INTERVAL_SECONDS )); then
-    log "Skip run. Updated within the last 3 hours (last run epoch: ${last_run})."
-    exit 0
+    if [[ -f "${NEEDS_COPY}" ]]; then
+        log "Sliced episodes are waiting to copy; running despite the recent sync."
+    else
+        log "Skip run. Updated within the last 3 hours (last run epoch: ${last_run})."
+        exit 0
+    fi
 fi
 
 log "Starting podcast updater for ${VOLUME}"
