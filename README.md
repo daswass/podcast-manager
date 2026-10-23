@@ -4,7 +4,7 @@ Downloads the latest episode of each show, removes sponsor reads from spoken sho
 
 Two jobs do this:
 
-- **4:00 AM prepare** does not need the headphones. It downloads spoken shows, transcribes them, and cuts sponsor reads. Music is downloaded and trimmed only.
+- **4:00 AM prepare** does not need the headphones. It downloads shows that cut ads, transcribes them, and cuts sponsor reads. Shows with cut ads turned off are downloaded and trimmed only.
 - **Copy** runs when the headphones mount, and again at 6:40 AM if they are still mounted. It copies files that prepare already finished. A show that published a newer episode after 4:00 AM is downloaded then and given its fixed trim.
 
 OpenSwim is used when both drives are mounted.
@@ -39,9 +39,14 @@ The mount watcher needs Full Disk Access for `/bin/bash` (System Settings → Pr
 ## Run it by hand
 
 ```bash
+./scripts/run-manager.sh
 ./venv/bin/python podcastsToShokz.py --prepare
 ./scripts/run-on-swimbuds-mount.sh
 ```
+
+`./scripts/run-manager.sh` serves the page and the API at http://127.0.0.1:8765 and opens the browser. Library is the show list. When SWIMBUDS or OpenSwim is plugged in, each show says whether its latest episode is on that drive. OpenSwim is the drive that counts when both are plugged in. Headphones lists SWIMBUDS and OpenSwim when those drives are plugged in, and can delete a file from the drive without touching the local copy. Prepare on a show runs that show only. If SWIMBUDS or OpenSwim is plugged in, it also copies that show and keeps only its configured number of episodes. OpenSwim wins when both are plugged in. The 4:00 AM job and the plug-in copy stay on their own schedule.
+
+While changing the page, run `npm --prefix web run dev` and leave the API on port 8765. The dev server proxies `/api` to it.
 
 Prepare logs to `/tmp/podcast-nightly-prepare.log`. Copy logs to `/tmp/podcast-swimbuds-updater.log`. Per-episode timings land in `~/Library/Application Support/podcast-manager/timing.jsonl`.
 
@@ -56,22 +61,22 @@ Local files live in `~/Library/Application Support/podcast-manager/`:
 | `ledger.json` | Which episode was downloaded, sliced, and copied |
 | `originals/<feed id>/<episode id>.mp3` | The download |
 | `sliced/<folder>/` | Spoken shows after sponsor cuts and speed change |
-| `trimmed/<folder>/` | Music, or a spoken show that was not sliced |
+| `trimmed/<folder>/` | A show with cut ads off, or a spoken show that was not sliced |
 | `needs_copy` | Present when a sliced file still needs to reach the headphones |
 
-The headphones get one file per show (two for Deep House Moscow), under `BioHack`, `Finance`, `News`, `Heroic`, or `Music`.
+The headphones get one file per show (two for Deep House Moscow), under `BioHack`, `Finance`, `News`, `Second Takes`, `Heroic`, or `Music`.
 
 ## How sponsor reads are removed
 
 Spoken shows use publisher chapters whose titles are ads, sponsors, or promos, plus a local model (`mlx-community/Qwen2.5-7B-Instruct-4bit`) over a Whisper transcript (`mlx-community/whisper-large-v3-turbo`). The model marks the lines that belong to each sponsor read. A short phrase list is used only when the model does not run.
 
-An edge can snap a few seconds to a nearby silence. When any sponsor span is found, the fixed start/end trim below is not applied a second time. Playback speed still is. Music never takes this path.
+An edge can snap a few seconds to a nearby silence. When any sponsor span is found, the fixed start/end trim below is not applied a second time. Playback speed still is. A show with cut ads off never takes this path.
 
 Acast refuses Python’s default client. Downloads send `User-Agent: podcast-manager`.
 
 ## Shows
 
-Trim is seconds cut from the start and the end when no sponsor spans were found. Speed is the playback rate. The feed id is the Podcast Index id. Edit `load_podcast_feeds()` in `podcastsToShokz.py` to add or drop a show.
+Trim is seconds cut from the start and the end when no sponsor spans were found. Speed is the playback rate. The feed id is the Podcast Index id. Add, remove, and edit shows on the page or in `shows.json`. A show with `cut_ads` null inherits its folder. Pinning a show to true or false leaves it alone when the folder changes. A new folder defaults cut ads to on. The folder name Music does not change behavior; Music is off because its `cut_ads` value is false.
 
 | Show | Folder | Feed | Speed | Trim | Kept |
 |---|---|---|---|---|---|
@@ -85,13 +90,14 @@ Trim is seconds cut from the start and the end when no sponsor spans were found.
 | WSJ Whats News | Finance | 491326 | 1.4x | 20 / 10 | 1 |
 | Speaking of Alternatives | Finance | 6879441 | 1.4x | 20 / 10 | 1 |
 | Alt Goes Mainstream | Finance | 1384568 | 1.4x | 20 / 10 | 1 |
-| Hard Fork | News | 1026613 | 1.4x | none | 1 |
 | The Intelligence | News | 743611 | 1.4x | none | 1 |
-| Freakonomics Radio | News | 311840 | 1.4x | none | 1 |
 | Up First | News | 946759 | 1.4x | none | 1 |
-| Paper Trail | News | 7800276 | 1.4x | none | 1 |
-| Search Engine | News | 5220235 | 1.4x | none | 1 |
-| Machine Gods | News | 8037119 | 1.4x | none | 1 |
+| Hard Fork | Second Takes | 1026613 | 1.4x | none | 1 |
+| Freakonomics Radio | Second Takes | 311840 | 1.4x | none | 1 |
+| Paper Trail | Second Takes | 7800276 | 1.4x | none | 1 |
+| Search Engine | Second Takes | 5220235 | 1.4x | none | 1 |
+| Machine Gods | Second Takes | 8037119 | 1.4x | none | 1 |
+| Revisionist History | Second Takes | 51341 | 1.4x | none | 1 |
 | Heroic with Brian Johnson | Heroic | 842919 | 1.0x | 10 / 0 | 1 |
 | The Daily Dad | Heroic | 743919 | 1.0x | 100 / 30 | 1 |
 | The Daily Stoic | Heroic | 404905 | 1.0x | 65 / 40 | 1 |

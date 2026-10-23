@@ -1,0 +1,270 @@
+{
+  "folders": [
+    {
+      "name": "BioHack",
+      "cut_ads": true
+    },
+    {
+      "name": "Finance",
+      "cut_ads": true
+    },
+    {
+      "name": "News",
+      "cut_ads": true
+    },
+    {
+      "name": "Second Takes",
+      "cut_ads": true
+    },
+    {
+      "name": "Heroic",
+      "cut_ads": true
+    },
+    {
+      "name": "Music",
+      "cut_ads": false
+    }
+  ],
+  "shows": [
+    {
+      "name": "Ben Greenfield Life",
+      "feed_id": 310787,
+      "folder": "BioHack",
+      "skip_first": 315,
+      "skip_last": 30,
+      "playback_speed": 1.5,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "The Human Upgrade with Dave Asprey",
+      "feed_id": 1031629,
+      "folder": "BioHack",
+      "skip_first": 150,
+      "skip_last": 0,
+      "playback_speed": 1.5,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Huberman Lab",
+      "feed_id": 1365758,
+      "folder": "BioHack",
+      "skip_first": 120,
+      "skip_last": 20,
+      "playback_speed": 1.5,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "FT News Briefing",
+      "feed_id": 73509,
+      "folder": "Finance",
+      "skip_first": 30,
+      "skip_last": 90,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Goldman Sachs The Markets",
+      "feed_id": 6321730,
+      "folder": "Finance",
+      "skip_first": 10,
+      "skip_last": 30,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Unhedged",
+      "feed_id": 6416251,
+      "folder": "Finance",
+      "skip_first": 32,
+      "skip_last": 45,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "The Daily",
+      "feed_id": 743229,
+      "folder": "News",
+      "skip_first": 32,
+      "skip_last": 45,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "WSJ Whats News",
+      "feed_id": 491326,
+      "folder": "News",
+      "skip_first": 20,
+      "skip_last": 10,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Speaking of Alternatives",
+      "feed_id": 6879441,
+      "folder": "Finance",
+      "skip_first": 20,
+      "skip_last": 10,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Alt Goes Mainstream",
+      "feed_id": 1384568,
+      "folder": "Finance",
+      "skip_first": 20,
+      "skip_last": 10,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Hard Fork",
+      "feed_id": 1026613,
+      "folder": "Second Takes",
+      "skip_first": 0,
+      "skip_last": 0,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "The Intelligence",
+      "feed_id": 743611,
+      "folder": "News",
+      "skip_first": 0,
+      "skip_last": 0,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Freakonomics Radio",
+      "feed_id": 311840,
+      "folder": "Second Takes",
+      "skip_first": 0,
+      "skip_last": 0,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Up First",
+      "feed_id": 946759,
+      "folder": "News",
+      "skip_first": 0,
+      "skip_last": 0,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Paper Trail",
+      "feed_id": 7800276,
+      "folder": "Second Takes",
+      "skip_first": 0,
+      "skip_last": 0,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Search Engine",
+      "feed_id": 5220235,
+      "folder": "Second Takes",
+      "skip_first": 0,
+      "skip_last": 0,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Machine Gods",
+      "feed_id": 8037119,
+      "folder": "Second Takes",
+      "skip_first": 0,
+      "skip_last": 0,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Heroic with Brian Johnson",
+      "feed_id": 842919,
+      "folder": "Heroic",
+      "skip_first": 10,
+      "skip_last": 0,
+      "playback_speed": 1.0,
+      "num_episodes": 1,
+      "cut_ads": false
+    },
+    {
+      "name": "The Daily Dad",
+      "feed_id": 743919,
+      "folder": "Heroic",
+      "skip_first": 100,
+      "skip_last": 30,
+      "playback_speed": 1.0,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "The Daily Stoic",
+      "feed_id": 404905,
+      "folder": "Heroic",
+      "skip_first": 65,
+      "skip_last": 40,
+      "playback_speed": 1.0,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Deep House Moscow",
+      "feed_id": 1105989,
+      "folder": "Music",
+      "skip_first": 0,
+      "skip_last": 0,
+      "playback_speed": 1.0,
+      "num_episodes": 2,
+      "cut_ads": null
+    },
+    {
+      "name": "Heldeep Radio",
+      "feed_id": 838482,
+      "folder": "Music",
+      "skip_first": 45,
+      "skip_last": 0,
+      "playback_speed": 1.0,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Clublife Radio",
+      "feed_id": 41388,
+      "folder": "Music",
+      "skip_first": 45,
+      "skip_last": 0,
+      "playback_speed": 1.0,
+      "num_episodes": 1,
+      "cut_ads": null
+    },
+    {
+      "name": "Revisionist History",
+      "feed_id": 51341,
+      "folder": "Second Takes",
+      "skip_first": 0,
+      "skip_last": 0,
+      "playback_speed": 1.4,
+      "num_episodes": 1,
+      "cut_ads": null
+    }
+  ]
+}

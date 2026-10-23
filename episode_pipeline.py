@@ -12,8 +12,7 @@ def sync_plan(entry):
 
 
 def prepare_plan(entry, info=None):
-    # Music is copied with its fixed trim. Transcribing it only burns the
-    # nightly window.
+    # cut_ads false keeps the fixed trim and speed and skips transcription.
     if info is not None and info.get("slice") is False:
         if entry and entry.get("downloaded") and entry.get("original_path"):
             return "skip"

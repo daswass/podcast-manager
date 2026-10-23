@@ -17,6 +17,7 @@ from ad_model import complete_ad_prompt
 from ad_slices import cut_ads, find_ad_spans
 from episode_ledger import EpisodeLedger, refresh_needs_copy, support_dir
 from episode_pipeline import run_prepare, run_sync
+from library import LibraryError, feed_settings, load_library
 from whisper_transcribe import transcribe_episode
 
 import ssl
@@ -31,7 +32,7 @@ else:
 
 import podcastindex
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent / ".env")
 config = {
     "api_key": os.getenv('API_KEY'),
     "api_secret": os.getenv('API_SECRET')
@@ -287,50 +288,20 @@ def retry_api_call(func, *args, max_retries=3, initial_delay=1, **kwargs):
     if last_exception:
         raise last_exception
 
-def podcast(category, id, trim, num_episodes, speed, force_latest=0):
-    result = retry_api_call(index.podcastByFeedId, id)
+SHOWS_PATH = Path(__file__).resolve().parent / "shows.json"
 
-    feed = result.get("feed")
+
+def _feed_url(feed_id):
+    result = retry_api_call(index.podcastByFeedId, feed_id)
+    feed = (result or {}).get("feed")
     if isinstance(feed, list):
         if len(feed) == 0:
-            raise ValueError(f"No feed found for id {id}")
-        podcast_url = feed[0]["url"]
-    elif isinstance(feed, dict):
-        podcast_url = feed["url"]
-    else:
-        raise ValueError(f"Unexpected feed type for id {id}: {type(feed)}")
-    
-    return {
-        "id": id,
-        "url": podcast_url,
-        "category": category,
-        "num_episodes": num_episodes,
-        "skip_first": trim[0],
-        "skip_last": trim[1],
-        "playback_speed": speed,
-        "force_latest": force_latest
-    }
+            raise ValueError(f"No feed found for id {feed_id}")
+        return feed[0]["url"]
+    if isinstance(feed, dict):
+        return feed["url"]
+    raise ValueError(f"Unexpected feed type for id {feed_id}: {type(feed)}")
 
-def podcast_finance(id, trim, num_episodes=1, speed=1.4):
-    obj = podcast("Finance", id, trim, num_episodes, speed)
-    return obj
-
-def podcast_news(id, trim, num_episodes=1, speed=1.4):
-    obj = podcast("News", id, trim, num_episodes, speed)
-    return obj
-
-def podcast_biohack(id, trim, num_episodes=1, speed=1.5):
-    obj = podcast("BioHack", id, trim, num_episodes, speed)
-    return obj
-
-def podcast_heroic(id, trim, num_episodes=1, speed=1.0):
-    obj = podcast("Heroic", id, trim, num_episodes, speed)
-    return obj
-
-def podcast_music(id, trim, num_episodes):
-    obj = podcast("Music", id, trim, num_episodes, 1.0)
-    obj["slice"] = False
-    return obj
 
 # Spotify's prefix hosts embed the real media URL in the path, then refuse
 # the connection. Strip them before download. Leave working trackers in place.
@@ -523,44 +494,35 @@ def main(usb_drive_base_dir):
         remove_running_marker(support)
 
 def load_podcast_feeds():
-    # Dictionary mapping podcast names to their RSS feed URLs, categories, number of episodes to download, skip_first, skip_last, playback_speed
-    # See: https://podcastindex.org/
-    podcast_definitions = [
-        ("Ben Greenfield Life",                  lambda: podcast_biohack(310787,  [315 ,30])),
-        ("The Human Upgrade with Dave Asprey",   lambda: podcast_biohack(1031629, [150, 0])),
-        ("Huberman Lab",                         lambda: podcast_biohack(1365758, [120, 20])),
-        ("FT News Briefing",                     lambda: podcast_finance(73509,  [30, 90])),
-        ("Goldman Sachs The Markets",            lambda: podcast_finance(6321730,[10, 30])),
-        ("Unhedged",                             lambda: podcast_finance(6416251,[32, 45])),
-        ("The Daily",                            lambda: podcast_finance(743229, [32, 45])),
-        ("WSJ Whats News",                       lambda: podcast_finance(491326, [20, 10])),
-        ("Speaking of Alternatives",             lambda: podcast_finance(6879441,[20, 10])),
-        ("Alt Goes Mainstream",                  lambda: podcast_finance(1384568,[20, 10])),
-        ("Hard Fork",                            lambda: podcast_news(1026613, [0, 0])),
-        ("The Intelligence",                     lambda: podcast_news(743611,  [0, 0])),
-        ("Freakonomics Radio",                   lambda: podcast_news(311840,  [0, 0])),
-        ("Up First",                             lambda: podcast_news(946759,  [0, 0])),
-        ("Paper Trail",                          lambda: podcast_news(7800276, [0, 0])),
-        ("Search Engine",                        lambda: podcast_news(5220235, [0, 0])),
-        ("Machine Gods",                         lambda: podcast_news(8037119, [0, 0])),
-        #("Hot Money: Agent of Chaos",            lambda: podcast("Hot Money", 5464375, [20, 10], 1, 1.4, 1)),
-        ("Heroic with Brian Johnson",            lambda: podcast_heroic(842919, [10, 0])),
-        ("The Daily Dad",                        lambda: podcast_heroic(743919, [100, 30])),
-        ("The Daily Stoic",                      lambda: podcast_heroic(404905, [65, 40])),
-        ("Deep House Moscow",                    lambda: podcast_music(1105989, [0, 0], 2)),
-        ("Heldeep Radio",                        lambda: podcast_music(838482,  [45, 0], 1)),
-        ("Clublife Radio",                       lambda: podcast_music(41388,   [45, 0], 1)),
-    ]
-    
+    try:
+        library = load_library(SHOWS_PATH)
+    except LibraryError as error:
+        print(f"ERROR: {error}")
+        raise SystemExit(1)
     feeds = []
-    for podcast_name, podcast_func in podcast_definitions:
+    for show in library["shows"]:
         try:
-            feeds.append((podcast_name, podcast_func()))
-        except Exception as e:
-            print(f"ERROR: Failed to initialize podcast '{podcast_name}': {e}")
-            print(f"       Skipping this podcast and continuing with others...")
-            continue
+            url = _feed_url(show["feed_id"])
+            feeds.append((show["name"], feed_settings(show, library, url)))
+        except Exception as error:
+            print(f"ERROR: Failed to initialize podcast '{show['name']}': {error}")
+            print("       Skipping this podcast and continuing with others...")
     return feeds
+
+
+def select_feeds(feeds, only_feed_id):
+    if only_feed_id is None:
+        return feeds
+    try:
+        wanted = int(only_feed_id)
+    except (TypeError, ValueError):
+        print(f"ERROR: Feed id must be a number, got {only_feed_id}")
+        raise SystemExit(1)
+    selected = [(name, info) for name, info in feeds if info["id"] == wanted]
+    if not selected:
+        print(f"ERROR: No show with feed id {wanted}")
+        raise SystemExit(1)
+    return selected
 
 def _run_podcast_update(usb_drive_base_dir):
     if not os.path.exists(usb_drive_base_dir):
@@ -578,20 +540,62 @@ def _run_podcast_update(usb_drive_base_dir):
     update_last_run_timestamp(usb_drive_base_dir)
     print("Podcast episodes organized and downloaded. Big Day!")
 
-def prepare_main():
+def mounted_headphone_drive():
+    for drive in ("/Volumes/OpenSwim/", "/Volumes/SWIMBUDS/"):
+        if os.path.isdir(drive):
+            return drive
+    return None
+
+
+def copy_prepared_show(feeds, ledger, support):
+    name = feeds[0][0]
+    drive = mounted_headphone_drive()
+    if drive is None:
+        print(f"No headphones are plugged in, so {name} was not copied.")
+        return
+    marker = running_marker_path(drive)
+    if os.path.exists(marker) and not running_marker_is_stale(marker):
+        print(f"Headphones are already being updated, so {name} was not copied.")
+        return
+    info = feeds[0][1]
+    kept = info.get("force_latest") or info.get("num_episodes", 1)
+    print(f"Copying {name} to {drive} and keeping {kept}.")
+    try:
+        run_sync(drive, feeds, ledger, _sync_dependencies(support, drive))
+    finally:
+        refresh_needs_copy(ledger, support / "needs_copy")
+
+
+def prepare_main(only_feed_id=None):
+    if only_feed_id is not None:
+        try:
+            int(only_feed_id)
+        except (TypeError, ValueError):
+            print(f"ERROR: Feed id must be a number, got {only_feed_id}")
+            raise SystemExit(1)
+
     support = support_dir()
     if not acquire_running_marker(str(support)):
+        if only_feed_id is not None:
+            raise SystemExit(1)
         return
 
     try:
-        feeds = load_podcast_feeds()
+        feeds = select_feeds(load_podcast_feeds(), only_feed_id)
         ledger = EpisodeLedger(support / "ledger.json")
-        print("Preparing episodes. This transcribes and slices; it does not need the headphones.")
+        if only_feed_id is None:
+            print("Preparing episodes. This transcribes and slices; it does not need the headphones.")
+        else:
+            print(f"Preparing {feeds[0][0]}. Connected headphones get the episodes this show keeps.")
         try:
             run_prepare(feeds, ledger, _prepare_dependencies(support))
         finally:
             refresh_needs_copy(ledger, support / "needs_copy")
-        print("Nightly prepare finished.")
+        if only_feed_id is None:
+            print("Nightly prepare finished.")
+        else:
+            copy_prepared_show(feeds, ledger, support)
+            print("Prepare finished.")
     finally:
         remove_running_marker(str(support))
 
@@ -613,7 +617,17 @@ def wait_for_usb_drive(usb_base_drive_dir):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download podcasts for SWIMBUDS")
     parser.add_argument("--prepare", action="store_true", help="Download, transcribe, and slice without the headphones")
+    parser.add_argument(
+        "--prepare-show",
+        metavar="FEED_ID",
+        help="Prepare one show and copy it to headphones when they are plugged in",
+    )
     args = parser.parse_args()
+    if args.prepare and args.prepare_show:
+        parser.error("Choose either --prepare or --prepare-show")
+    if args.prepare_show:
+        prepare_main(only_feed_id=args.prepare_show)
+        raise SystemExit(0)
     if args.prepare:
         prepare_main()
         raise SystemExit(0)

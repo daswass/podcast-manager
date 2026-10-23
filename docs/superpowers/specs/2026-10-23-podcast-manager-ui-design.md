@@ -25,7 +25,7 @@ A show has:
 
 Speed and trim exist only on the show. The folder name “Music” does not change behavior. `cut_ads` false uses today’s music path: download, fixed trim, playback speed, no transcription and no sponsor cut. `cut_ads` true uses today’s spoken path.
 
-The committed file seeds today’s library. BioHack, Finance, News, and Heroic have `cut_ads` true. Music has `cut_ads` false. Every current show has `cut_ads` null.
+The committed file seeds today’s library. BioHack, Finance, News, Second Takes, and Heroic have `cut_ads` true. Music has `cut_ads` false. Shows inherit that value, except Heroic with Brian Johnson, which is pinned off.
 
 | Show | Folder | Feed | Speed | Trim | Kept |
 |---|---|---|---|---|---|
@@ -39,13 +39,14 @@ The committed file seeds today’s library. BioHack, Finance, News, and Heroic h
 | WSJ Whats News | Finance | 491326 | 1.4 | 20 / 10 | 1 |
 | Speaking of Alternatives | Finance | 6879441 | 1.4 | 20 / 10 | 1 |
 | Alt Goes Mainstream | Finance | 1384568 | 1.4 | 20 / 10 | 1 |
-| Hard Fork | News | 1026613 | 1.4 | 0 / 0 | 1 |
 | The Intelligence | News | 743611 | 1.4 | 0 / 0 | 1 |
-| Freakonomics Radio | News | 311840 | 1.4 | 0 / 0 | 1 |
 | Up First | News | 946759 | 1.4 | 0 / 0 | 1 |
-| Paper Trail | News | 7800276 | 1.4 | 0 / 0 | 1 |
-| Search Engine | News | 5220235 | 1.4 | 0 / 0 | 1 |
-| Machine Gods | News | 8037119 | 1.4 | 0 / 0 | 1 |
+| Hard Fork | Second Takes | 1026613 | 1.4 | 0 / 0 | 1 |
+| Freakonomics Radio | Second Takes | 311840 | 1.4 | 0 / 0 | 1 |
+| Paper Trail | Second Takes | 7800276 | 1.4 | 0 / 0 | 1 |
+| Search Engine | Second Takes | 5220235 | 1.4 | 0 / 0 | 1 |
+| Machine Gods | Second Takes | 8037119 | 1.4 | 0 / 0 | 1 |
+| Revisionist History | Second Takes | 51341 | 1.4 | 0 / 0 | 1 |
 | Heroic with Brian Johnson | Heroic | 842919 | 1.0 | 10 / 0 | 1 |
 | The Daily Dad | Heroic | 743919 | 1.0 | 100 / 30 | 1 |
 | The Daily Stoic | Heroic | 404905 | 1.0 | 65 / 40 | 1 |
