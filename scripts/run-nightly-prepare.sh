@@ -4,7 +4,7 @@
 
 set -uo pipefail
 
-PROJECT_DIR="/Users/ericwasserman/workspace/podcast-manager"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON="${PROJECT_DIR}/venv/bin/python3"
 SCRIPT="${PROJECT_DIR}/podcastsToShokz.py"
 LOCK_DIR="/tmp/podcast-nightly-prepare.lock.d"

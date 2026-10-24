@@ -24,6 +24,8 @@ export type Show = {
   on_headphones: boolean | null;
 };
 
+export type JobActivity = "downloading" | "copying" | "both" | "running" | null;
+
 export type Library = {
   version: string;
   folders: Folder[];
@@ -31,6 +33,7 @@ export type Library = {
   prepare_busy: boolean;
   prepare_reason: string | null;
   headphone_volume: string | null;
+  job: JobActivity;
 };
 
 export type SearchHit = {

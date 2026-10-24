@@ -3,29 +3,27 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.ericwasserman.podcast-swimbuds-updater</string>
+    <string>__LABEL__</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/ericwasserman/workspace/podcast-manager/scripts/run-on-swimbuds-mount.sh</string>
+        <string>__PROJECT_DIR__/scripts/run-on-swimbuds-mount.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/ericwasserman/workspace/podcast-manager</string>
+    <string>__PROJECT_DIR__</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>__PATH__</string>
     </dict>
 
-    <!-- Fires when any volume is mounted or unmounted under /Volumes -->
     <key>WatchPaths</key>
     <array>
         <string>/Volumes</string>
     </array>
 
-    <!-- Daily run at 6:40 AM local time if SWIMBUDS is mounted -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
@@ -37,7 +35,6 @@
     <key>RunAtLoad</key>
     <false/>
 
-    <!-- Debounce rapid /Volumes changes (e.g. mount + Spotlight indexing) -->
     <key>ThrottleInterval</key>
     <integer>30</integer>
 

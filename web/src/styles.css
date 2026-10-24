@@ -48,6 +48,45 @@ button { cursor: pointer; }
   color: #9c988c;
 }
 
+.top-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.activity {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+  border: 1px solid #e6a15c;
+  color: #e6a15c;
+  background: rgba(230, 161, 92, 0.08);
+}
+
+.activity.copying {
+  color: #d7eccf;
+  border-color: #3f5c45;
+  background: rgba(215, 236, 207, 0.08);
+}
+
+.activity::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: activity-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes activity-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 .nav {
   display: flex;
   padding: 4px;
@@ -416,7 +455,7 @@ input:focus, select:focus, button:focus-visible {
 .file-title { overflow-wrap: anywhere; }
 
 @media (max-width: 720px) {
-  .topbar, .toolbar, .show-main, .folder-head { flex-wrap: wrap; }
+  .topbar, .top-status, .toolbar, .show-main, .folder-head { flex-wrap: wrap; }
   .show-main { align-items: flex-start; }
   .show-identity { flex-basis: 100%; }
   .editor { grid-template-columns: 1fr; }

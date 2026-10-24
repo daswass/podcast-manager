@@ -14,27 +14,17 @@ OpenSwim is used when both drives are mounted.
 Apple silicon. The transcriber and the ad model run through MLX.
 
 ```bash
-python3 -m venv venv
-./venv/bin/pip install -r requirements.txt
-brew install ffmpeg
+./scripts/install.sh
 ```
 
-Create `.env` in the repo root. It is gitignored.
+The installer asks whether to install two optional login jobs, then asks for a [Podcast Index](https://podcastindex.org/) key when `.env` is missing. Those keys are written to `.env`. It then creates the virtualenv, installs Python dependencies, and builds the page. The optional jobs are:
 
-```
-API_KEY=...
-API_SECRET=...
-```
+- the headphone copy watcher and the 4:00 AM prepare job
+- the manager website at http://127.0.0.1:8765, started at login
 
-Those are a [Podcast Index](https://podcastindex.org/) key and secret. The nightly script starts in this directory, so `load_dotenv()` finds the file.
+`.env` and `local.env` are gitignored. `local.env` holds the LaunchAgent label prefix (`com.podcast-manager` by default). Copy `.env.example` and `local.env.example` if you want to fill them in by hand. The scripts find this checkout from their own path.
 
-Install both LaunchAgents:
-
-```bash
-./scripts/install-swimbuds-launch-agent.sh
-```
-
-The mount watcher needs Full Disk Access for `/bin/bash` (System Settings → Privacy & Security → Full Disk Access). The 4:00 AM job runs the next time the Mac is awake at 4:00 AM.
+The mount watcher needs Full Disk Access for `/bin/bash` (System Settings → Privacy & Security → Full Disk Access). The 4:00 AM job runs the next time the Mac is awake at 4:00 AM. ffmpeg has to be installed (`brew install ffmpeg`); the installer offers to do that when Homebrew is available.
 
 ## Run it by hand
 
@@ -44,7 +34,7 @@ The mount watcher needs Full Disk Access for `/bin/bash` (System Settings → Pr
 ./scripts/run-on-swimbuds-mount.sh
 ```
 
-`./scripts/run-manager.sh` serves the page and the API at http://127.0.0.1:8765 and opens the browser. Library is the show list. When SWIMBUDS or OpenSwim is plugged in, each show says whether its latest episode is on that drive. OpenSwim is the drive that counts when both are plugged in. Headphones lists SWIMBUDS and OpenSwim when those drives are plugged in, and can delete a file from the drive without touching the local copy. Prepare on a show runs that show only. If SWIMBUDS or OpenSwim is plugged in, it also copies that show and keeps only its configured number of episodes. OpenSwim wins when both are plugged in. The 4:00 AM job and the plug-in copy stay on their own schedule.
+`./scripts/run-manager.sh` serves the page and the API at http://127.0.0.1:8765 and opens the browser. A badge at the top shows when a download or a headphone copy is running. Library is the show list. When SWIMBUDS or OpenSwim is plugged in, each show says whether its latest episode is on that drive. OpenSwim is the drive that counts when both are plugged in. Headphones lists SWIMBUDS and OpenSwim when those drives are plugged in, and can delete a file from the drive without touching the local copy. Prepare on a show runs that show only. If SWIMBUDS or OpenSwim is plugged in, it also copies that show and keeps only its configured number of episodes. OpenSwim wins when both are plugged in. The 4:00 AM job and the plug-in copy stay on their own schedule.
 
 While changing the page, run `npm --prefix web run dev` and leave the API on port 8765. The dev server proxies `/api` to it.
 

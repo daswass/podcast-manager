@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -10,7 +11,8 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from library import effective_cut_ads, feed_settings, load_library
-from manager_server import _DRIVE_FILES_CACHE, create_app
+from manager_server import _DRIVE_FILES_CACHE, _job_flags, create_app
+from podcastsToShokz import TMP_RUNNING_MARKER
 from podcastsToShokz import load_podcast_feeds, select_feeds
 
 
@@ -94,6 +96,53 @@ class ManagerApiTests(unittest.TestCase):
         self.assertIn("Nightly prepare", response.json()["error"])
         self.assertEqual(self.started, [])
 
+    def _live_marker(self, path):
+        path.write_text(f"started=now\npid={os.getpid()}\nepoch=1\n")
+
+    def test_idle_library_has_no_running_job(self):
+        self.assertIsNone(self.client.get("/api/library").json()["job"])
+
+    def test_prepare_marker_shows_downloading(self):
+        self._live_marker(self.marker)
+        self.assertEqual(self.client.get("/api/library").json()["job"], "downloading")
+
+    def test_drive_marker_shows_copying(self):
+        self._live_marker(self.drive / "podcast_downloader_running.txt")
+        self.assertEqual(self.client.get("/api/library").json()["job"], "copying")
+
+    def test_one_copy_process_holding_both_markers_shows_copying(self):
+        self._live_marker(self.marker)
+        self._live_marker(self.drive / "podcast_downloader_running.txt")
+        self.assertEqual(self.client.get("/api/library").json()["job"], "copying")
+
+    def test_separate_prepare_and_copy_processes_show_both(self):
+        downloader = subprocess.Popen(["sleep", "30"])
+        copier = subprocess.Popen(["sleep", "30"])
+        try:
+            self.marker.write_text(f"started=now\npid={downloader.pid}\nepoch=1\n")
+            (self.drive / "podcast_downloader_running.txt").write_text(f"started=now\npid={copier.pid}\nepoch=1\n")
+            self.assertEqual(self.client.get("/api/library").json()["job"], "both")
+        finally:
+            downloader.kill()
+            copier.kill()
+            downloader.wait()
+            copier.wait()
+
+    def test_stale_copy_marker_is_idle(self):
+        (self.drive / "podcast_downloader_running.txt").write_text("started=old\npid=99999999\nepoch=1\n")
+        self.assertIsNone(self.client.get("/api/library").json()["job"])
+
+    def test_tmp_marker_follows_the_process_command(self):
+        class Idle:
+            def running_feed(self):
+                return None
+
+        tmp = Path(TMP_RUNNING_MARKER)
+        with patch("manager_server._marker_live", return_value=True), patch("manager_server._marker_command", return_value="python podcastsToShokz.py --prepare"):
+            self.assertEqual(_job_flags(Idle(), [tmp], []), "downloading")
+        with patch("manager_server._marker_live", return_value=True), patch("manager_server._marker_command", return_value="python podcastsToShokz.py"):
+            self.assertEqual(_job_flags(Idle(), [tmp], []), "copying")
+
     def test_prepare_starts_when_nothing_else_is_running(self):
         response = self.client.post("/api/shows/1/prepare")
         self.assertEqual(response.status_code, 200)
@@ -101,6 +150,7 @@ class ManagerApiTests(unittest.TestCase):
         show = response.json()["shows"][0]
         self.assertEqual(show["status"], "preparing")
         self.assertTrue(response.json()["prepare_busy"])
+        self.assertEqual(response.json()["job"], "downloading")
 
     def test_prepare_error_stays_on_the_show(self):
         log = Path(self.tmp.name) / "prepare.log"

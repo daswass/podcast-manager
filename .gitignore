@@ -1,4 +1,5 @@
 .env
+local.env
 venv/
 .venv/
 web/node_modules/

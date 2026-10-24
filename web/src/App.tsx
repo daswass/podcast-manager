@@ -17,6 +17,7 @@ import {
   type HeadphoneFile,
   type ShowPatch,
   type HeadphoneVolume,
+  type JobActivity,
   type Library,
   type SearchHit,
   type Show,
@@ -112,7 +113,9 @@ export function App() {
           <p className="brand">Podcast Manager</p>
           <p className="tagline">Shows, folders, and the headphone drive</p>
         </div>
-        <nav className="nav">
+        <div className="top-status">
+          <ActivityBadges job={library?.job ?? null} />
+          <nav className="nav">
           <button type="button" className={view === "library" ? "active" : ""} onClick={() => setView("library")}>
             Library
           </button>
@@ -123,7 +126,8 @@ export function App() {
           >
             Headphones
           </button>
-        </nav>
+          </nav>
+        </div>
       </header>
       {notice ? (
         <div className="notice" role="status">
@@ -155,6 +159,38 @@ export function App() {
       ) : null}
     </div>
   );
+}
+
+function ActivityBadge(props: { kind: "downloading" | "copying" | "running"; label: string; detail: string }) {
+  return (
+    <span className={`activity ${props.kind}`} title={props.detail}>
+      {props.label}
+    </span>
+  );
+}
+
+function ActivityBadges(props: { job: JobActivity }) {
+  switch (props.job) {
+    case null:
+      return null;
+    case "downloading":
+      return <ActivityBadge kind="downloading" label="Downloading" detail="A prepare is downloading and processing shows." />;
+    case "copying":
+      return <ActivityBadge kind="copying" label="Copying" detail="Files are being copied to the headphones." />;
+    case "both":
+      return (
+        <>
+          <ActivityBadge kind="downloading" label="Downloading" detail="A prepare is downloading and processing shows." />
+          <ActivityBadge kind="copying" label="Copying" detail="Files are being copied to the headphones." />
+        </>
+      );
+    case "running":
+      return <ActivityBadge kind="running" label="Running" detail="A download or headphone copy is running." />;
+    default: {
+      const unexpected: never = props.job;
+      return unexpected;
+    }
+  }
 }
 
 function Main(props: {

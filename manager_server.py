@@ -222,6 +222,7 @@ def create_app(
             "prepare_busy": reason is not None,
             "prepare_reason": reason,
             "headphone_volume": headphone.name if headphone is not None else None,
+            "job": _job_flags(jobs, marker_paths, drive_roots),
         }
 
     def library_response():
@@ -441,6 +442,101 @@ def _prepare_block_reason(jobs, marker_paths):
     running = jobs.running_feed()
     if running is not None:
         return "Another prepare is already running"
+    return None
+
+
+def _marker_live(path):
+    path = Path(path)
+    try:
+        exists = path.exists()
+    except OSError:
+        return False
+    if not exists:
+        return False
+    return not running_marker_is_stale(str(path))
+
+
+def _marker_pid(path):
+    try:
+        for line in Path(path).read_text().splitlines():
+            if line.startswith("pid="):
+                return int(line.split("=", 1)[1])
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _marker_command(path):
+    pid = _marker_pid(path)
+    if pid is None:
+        return ""
+    try:
+        return subprocess.check_output(["ps", "-p", str(pid), "-o", "command="], text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
+def _marker_job(path, drive_roots):
+    path = Path(path)
+    drive_markers = {str(Path(root) / RUNNING_MARKER_NAME) for root in drive_roots}
+    if str(path) in drive_markers:
+        return "copying"
+    if path == Path(TMP_RUNNING_MARKER):
+        command = _marker_command(path)
+        if "--prepare" in command:
+            return "downloading"
+        if "podcastsToShokz.py" in command:
+            return "copying"
+        return "running"
+    return "downloading"
+
+
+def _job_flags(jobs, prepare_markers, drive_roots):
+    downloading = jobs.running_feed() is not None
+    copying = False
+    ambiguous = False
+    seen = set()
+    live = []
+    markers = [Path(path) for path in prepare_markers]
+    markers.extend(Path(root) / RUNNING_MARKER_NAME for root in drive_roots)
+    drive_markers = {str(Path(root) / RUNNING_MARKER_NAME) for root in drive_roots}
+    for path in markers:
+        key = str(path)
+        if key in seen or not _marker_live(path):
+            continue
+        seen.add(key)
+        live.append(path)
+    copy_pids = {
+        _marker_pid(path)
+        for path in live
+        if str(path) in drive_markers
+    }
+    copy_pids.discard(None)
+    for path in live:
+        if str(path) in drive_markers:
+            copying = True
+            continue
+        if path == Path(TMP_RUNNING_MARKER):
+            kind = _marker_job(path, drive_roots)
+            if kind == "downloading":
+                downloading = True
+            elif kind == "copying":
+                copying = True
+            else:
+                ambiguous = True
+            continue
+        pid = _marker_pid(path)
+        if pid is not None and pid in copy_pids:
+            continue
+        downloading = True
+    if downloading and copying:
+        return "both"
+    if downloading:
+        return "downloading"
+    if copying:
+        return "copying"
+    if ambiguous:
+        return "running"
     return None
 
 

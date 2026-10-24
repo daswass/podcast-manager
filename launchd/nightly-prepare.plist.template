@@ -3,20 +3,20 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.ericwasserman.podcast-nightly-prepare</string>
+    <string>__LABEL__</string>
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/ericwasserman/workspace/podcast-manager/scripts/run-nightly-prepare.sh</string>
+        <string>__PROJECT_DIR__/scripts/run-nightly-prepare.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/ericwasserman/workspace/podcast-manager</string>
+    <string>__PROJECT_DIR__</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>__PATH__</string>
     </dict>
 
     <key>StartCalendarInterval</key>
