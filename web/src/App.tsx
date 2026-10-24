@@ -10,6 +10,7 @@ import {
   getLibrary,
   patchFolder,
   patchShow,
+  cutShowAds,
   prepareShow,
   resolveFeed,
   searchShows,
@@ -155,6 +156,14 @@ export function App() {
               if (error instanceof ApiError && error.status === 409) await reloadFromDisk();
             }
           }}
+          onCutAds={async (feedId) => {
+            try {
+              accept(await cutShowAds(feedId));
+            } catch (error) {
+              setNotice(error instanceof Error ? error.message : "Ad removal did not start");
+              if (error instanceof ApiError && error.status === 409) await reloadFromDisk();
+            }
+          }}
         />
       ) : null}
     </div>
@@ -204,6 +213,7 @@ function Main(props: {
   onAdding: (open: boolean) => void;
   onNotice: (message: string) => void;
   onPrepare: (feedId: number) => Promise<void>;
+  onCutAds: (feedId: number) => Promise<void>;
 }) {
   switch (props.view) {
     case "library":
@@ -218,6 +228,7 @@ function Main(props: {
           onAdding={props.onAdding}
           onNotice={props.onNotice}
           onPrepare={props.onPrepare}
+          onCutAds={props.onCutAds}
         />
       );
     case "headphones":
@@ -272,6 +283,7 @@ function LibraryView(props: {
   onAdding: (open: boolean) => void;
   onNotice: (message: string) => void;
   onPrepare: (feedId: number) => Promise<void>;
+  onCutAds: (feedId: number) => Promise<void>;
 }) {
   const [folderName, setFolderName] = useState("");
   const [preview, setPreview] = useState<string[] | null>(null);
@@ -402,6 +414,7 @@ function LibraryView(props: {
           onActivate={() => props.onActivate(folder.name)}
           onNotice={props.onNotice}
           onPrepare={props.onPrepare}
+          onCutAds={props.onCutAds}
         />
       ))}
       {props.adding && initialFolder ? (
@@ -433,6 +446,7 @@ function FolderSection(props: {
   onActivate: () => void;
   onNotice: (message: string) => void;
   onPrepare: (feedId: number) => Promise<void>;
+  onCutAds: (feedId: number) => Promise<void>;
 }) {
   const [name, setName] = useState(props.folder.name);
   const [cutAds, setCutAds] = useState(props.folder.cut_ads);
@@ -562,6 +576,7 @@ function FolderSection(props: {
           }}
           onNotice={props.onNotice}
           onPrepare={props.onPrepare}
+          onCutAds={props.onCutAds}
         />
       ))}
     </section>
@@ -580,6 +595,7 @@ function ShowRow(props: {
   onToggle: () => void;
   onNotice: (message: string) => void;
   onPrepare: (feedId: number) => Promise<void>;
+  onCutAds: (feedId: number) => Promise<void>;
 }) {
   const preparing = props.show.status === "preparing";
   const reason = preparing ? "Preparing this show" : props.prepareReason;
@@ -616,9 +632,26 @@ function ShowRow(props: {
             <HeadphonesMark />
           </span>
         ) : null}
-        <span className={`status ${props.show.status}`} title={statusDetail(props.show.status)}>
-          {statusLabel(props.show.status)}
-        </span>
+        {props.show.status === "trimmed" ? (
+          <button
+            type="button"
+            className="status trimmed"
+            disabled={props.prepareBusy}
+            aria-label="Remove ads from this episode and copy it to the headphones"
+            title={
+              props.prepareBusy
+                ? reason ?? "Prepare is already running"
+                : "Remove ads from this episode and copy it to the headphones"
+            }
+            onClick={() => void props.onCutAds(props.show.feed_id)}
+          >
+            Ads
+          </button>
+        ) : (
+          <span className={`status ${props.show.status}`} title={statusDetail(props.show.status)}>
+            {statusLabel(props.show.status)}
+          </span>
+        )}
         <button
           type="button"
           className="prepare"

@@ -320,6 +320,19 @@ input:focus, select:focus, button:focus-visible {
 
 .status.sliced { color: #d7eccf; border-color: #3f5c45; }
 .status.trimmed { color: #e7b1a4; border-color: #6a4038; }
+button.status {
+  appearance: none;
+  margin: 0;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: inherit;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  background: transparent;
+  cursor: pointer;
+}
+button.status:disabled { cursor: default; opacity: 0.55; }
+button.status.trimmed:hover:not(:disabled) { border-color: #e7b1a4; }
 .status.preparing { color: #e6a15c; border-color: #e6a15c; }
 .status.not_prepared { color: #9c988c; }
 .status.headphones {

@@ -159,6 +159,53 @@ class PipelineTest(unittest.TestCase):
             self.assertFalse(stored["sliced"])
             self.assertEqual(stored["trimmed_path"], str(root / "trimmed.mp3"))
 
+    def test_force_slice_latest_removes_ads_from_the_newest_episode_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger = EpisodeLedger(root / "ledger.json")
+            calls = {"sliced": [], "trimmed": []}
+            shows = [("Up First", {
+                "id": 10,
+                "category": "News",
+                "num_episodes": 2,
+                "force_latest": 0,
+                "slice": False,
+                "force_slice_latest": True,
+            })]
+
+            def download(url, dest):
+                Path(dest).parent.mkdir(parents=True, exist_ok=True)
+                Path(dest).write_bytes(b"audio")
+
+            def render_sliced(info, source, dest, segments):
+                calls["sliced"].append(Path(dest).name)
+                Path(dest).parent.mkdir(parents=True, exist_ok=True)
+                Path(dest).write_bytes(b"sliced")
+                return 10
+
+            def render_trimmed(info, source, dest):
+                calls["trimmed"].append(Path(dest).name)
+                Path(dest).parent.mkdir(parents=True, exist_ok=True)
+                Path(dest).write_bytes(b"trimmed")
+
+            deps = {
+                "fetch_episodes": lambda info: [episode(9, "New"), episode(8, "Old")],
+                "download": download,
+                "transcribe": lambda path: [],
+                "render_sliced": render_sliced,
+                "render_trimmed": render_trimmed,
+                "original_path": lambda info, ep: root / f"original-{ep['id']}.mp3",
+                "sliced_path": lambda info, ep: root / f"sliced-{ep['id']}.mp3",
+                "trimmed_path": lambda info, ep: root / f"trimmed-{ep['id']}.mp3",
+                "record_timing": lambda row: None,
+                "safe_title": lambda title: title,
+            }
+            run_prepare(shows, ledger, deps)
+            self.assertEqual(calls["sliced"], ["sliced-9.mp3"])
+            self.assertEqual(calls["trimmed"], ["trimmed-8.mp3"])
+            self.assertTrue(ledger.get(10, 9)["sliced"])
+            self.assertFalse(ledger.get(10, 8)["sliced"])
+
     def test_sync_copies_sliced_audio_and_does_not_download(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

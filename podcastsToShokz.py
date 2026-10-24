@@ -566,7 +566,7 @@ def copy_prepared_show(feeds, ledger, support):
         refresh_needs_copy(ledger, support / "needs_copy")
 
 
-def prepare_main(only_feed_id=None):
+def prepare_main(only_feed_id=None, force_slice=False):
     if only_feed_id is not None:
         try:
             int(only_feed_id)
@@ -582,11 +582,16 @@ def prepare_main(only_feed_id=None):
 
     try:
         feeds = select_feeds(load_podcast_feeds(), only_feed_id)
+        if force_slice:
+            feeds = [(name, {**info, "force_slice_latest": True}) for name, info in feeds]
         ledger = EpisodeLedger(support / "ledger.json")
         if only_feed_id is None:
             print("Preparing episodes. This transcribes and slices; it does not need the headphones.")
         else:
-            print(f"Preparing {feeds[0][0]}. Connected headphones get the episodes this show keeps.")
+            if force_slice:
+                print(f"Preparing {feeds[0][0]} and removing ads. Connected headphones get the new file.")
+            else:
+                print(f"Preparing {feeds[0][0]}. Connected headphones get the episodes this show keeps.")
         try:
             run_prepare(feeds, ledger, _prepare_dependencies(support))
         finally:
@@ -622,11 +627,18 @@ if __name__ == "__main__":
         metavar="FEED_ID",
         help="Prepare one show and copy it to headphones when they are plugged in",
     )
+    parser.add_argument(
+        "--cut-ads",
+        action="store_true",
+        help="With --prepare-show, remove ads from the latest episode even when the show leaves them in",
+    )
     args = parser.parse_args()
     if args.prepare and args.prepare_show:
         parser.error("Choose either --prepare or --prepare-show")
+    if args.cut_ads and not args.prepare_show:
+        parser.error("--cut-ads is only used with --prepare-show")
     if args.prepare_show:
-        prepare_main(only_feed_id=args.prepare_show)
+        prepare_main(only_feed_id=args.prepare_show, force_slice=args.cut_ads)
         raise SystemExit(0)
     if args.prepare:
         prepare_main()

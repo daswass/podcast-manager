@@ -83,6 +83,24 @@ class PrepareMainCopyTest(unittest.TestCase):
         copy = self._run(None)
         copy.assert_not_called()
 
+    def test_cut_ads_marks_the_latest_episode_and_still_copies(self):
+        feeds = [("Huberman Lab", {"id": 1365758, "num_episodes": 1, "slice": False})]
+        with (
+            patch("podcastsToShokz.support_dir", return_value=Path("/tmp/podcast-manager-support")),
+            patch("podcastsToShokz.acquire_running_marker", return_value=True),
+            patch("podcastsToShokz.remove_running_marker"),
+            patch("podcastsToShokz.load_podcast_feeds", return_value=feeds),
+            patch("podcastsToShokz.EpisodeLedger"),
+            patch("podcastsToShokz.run_prepare") as prepare,
+            patch("podcastsToShokz.refresh_needs_copy"),
+            patch("podcastsToShokz.copy_prepared_show") as copy,
+        ):
+            podcastsToShokz.prepare_main(only_feed_id=1365758, force_slice=True)
+        info = prepare.call_args.args[0][0][1]
+        self.assertTrue(info["force_slice_latest"])
+        self.assertFalse(info["slice"])
+        copy.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

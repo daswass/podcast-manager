@@ -404,16 +404,34 @@ def create_app(
         jobs.begin(feed_id, process, log_path)
         return library_response()
 
+    @app.post("/api/shows/{feed_id}/cut-ads")
+    def cut_show_ads(feed_id: int):
+        try:
+            library = load_library(shows_path)
+        except LibraryError as error:
+            return JSONResponse({"error": str(error)}, status_code=422)
+        if not any(int(show["feed_id"]) == int(feed_id) for show in library["shows"]):
+            return JSONResponse({"error": f"Unknown show {feed_id}"}, status_code=404)
+        reason = _prepare_block_reason(jobs, marker_paths)
+        if reason:
+            return JSONResponse({"error": reason}, status_code=409)
+        process, log_path = start_prepare(int(feed_id), force_slice=True)
+        jobs.begin(feed_id, process, log_path)
+        return library_response()
+
     if web_root is not None and web_root.is_dir():
         app.mount("/", StaticFiles(directory=str(web_root), html=True), name="web")
     return app
 
 
-def _start_prepare_process(feed_id):
+def _start_prepare_process(feed_id, force_slice=False):
     log_path = Path(f"/tmp/podcast-prepare-{feed_id}.log")
+    command = [sys.executable, str(REPO / "podcastsToShokz.py"), "--prepare-show", str(feed_id)]
+    if force_slice:
+        command.append("--cut-ads")
     with log_path.open("w") as handle:
         process = subprocess.Popen(
-            [sys.executable, str(REPO / "podcastsToShokz.py"), "--prepare-show", str(feed_id)],
+            command,
             cwd=str(REPO),
             stdout=handle,
             stderr=subprocess.STDOUT,

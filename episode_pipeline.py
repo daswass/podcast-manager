@@ -34,14 +34,18 @@ def run_prepare(feeds, ledger, deps):
         count = info.get("force_latest") or info.get("num_episodes", 1)
         episodes = episodes[:count]
         keep_ids = []
-        for episode in episodes:
+        for index, episode in enumerate(episodes):
             episode_id = episode.get("id")
             if episode_id is None:
                 print(f"\tSkipping an episode of {podcast_name} with no id")
                 continue
             keep_ids.append(episode_id)
+            episode_info = info
+            if index == 0 and info.get("force_slice_latest"):
+                episode_info = dict(info)
+                episode_info.pop("slice", None)
             try:
-                _prepare_one(podcast_name, info, episode, ledger, deps)
+                _prepare_one(podcast_name, episode_info, episode, ledger, deps)
             except Exception as error:
                 print(f"ERROR: Failed to prepare '{podcast_name}' episode {episode_id}: {error}")
         if episodes:

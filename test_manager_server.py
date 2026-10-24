@@ -143,6 +143,33 @@ class ManagerApiTests(unittest.TestCase):
         with patch("manager_server._marker_live", return_value=True), patch("manager_server._marker_command", return_value="python podcastsToShokz.py"):
             self.assertEqual(_job_flags(Idle(), [tmp], []), "copying")
 
+    def test_cut_ads_reprocesses_the_show_and_marks_it_preparing(self):
+        calls = []
+
+        def start(feed_id, force_slice=False):
+            calls.append((feed_id, force_slice))
+            return StillRunning(), None
+
+        app = create_app(
+            shows_path=self.shows,
+            drive_roots=[self.drive],
+            marker_paths=[self.marker],
+            start_prepare=start,
+            ledger_path=self.ledger,
+            serve_ui=False,
+            load_episodes=lambda feed_id: {},
+            load_feed=lambda feed_id: {},
+        )
+        before = self.shows.read_text()
+        with TestClient(app) as client:
+            response = client.post("/api/shows/1/cut-ads")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(calls, [(1, True)])
+        self.assertEqual(response.json()["shows"][0]["status"], "preparing")
+        self.assertEqual(response.json()["shows"][0]["cut_ads"], None)
+        self.assertEqual(response.json()["job"], "downloading")
+        self.assertEqual(self.shows.read_text(), before)
+
     def test_prepare_starts_when_nothing_else_is_running(self):
         response = self.client.post("/api/shows/1/prepare")
         self.assertEqual(response.status_code, 200)

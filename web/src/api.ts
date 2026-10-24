@@ -182,3 +182,7 @@ export function deleteHeadphoneFile(volume: string, path: string): Promise<void>
 export function prepareShow(feedId: number): Promise<Library> {
   return request<Library>(`/api/shows/${feedId}/prepare`, { method: "POST" });
 }
+
+export function cutShowAds(feedId: number): Promise<Library> {
+  return request<Library>(`/api/shows/${feedId}/cut-ads`, { method: "POST" });
+}
