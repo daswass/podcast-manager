@@ -102,3 +102,13 @@ Clublife’s Podcast Index feed is Tiësto’s show, currently published under t
 ```bash
 ./venv/bin/python -m unittest
 ```
+
+## Local player
+
+Processed episodes stay under `~/Library/Application Support/podcast-manager`. This serves that archive in the browser:
+
+```bash
+./scripts/install-web-player.sh
+```
+
+The script installs a per-user LaunchAgent for this checkout and starts the player at http://127.0.0.1:5050. For a one-off run, use `./venv/bin/python web_ui.py`. Set `PODCAST_ARCHIVE_DIR` to serve a different folder.
