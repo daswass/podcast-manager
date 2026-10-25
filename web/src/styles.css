@@ -156,6 +156,8 @@ button { cursor: pointer; }
 
 .page { display: flex; flex-direction: column; gap: 14px; }
 
+.player-page { gap: 0; }
+
 .toolbar, .folder-head, .show-main, .file-row, .dialog-head {
   display: flex;
   align-items: center;
@@ -312,14 +314,29 @@ button.cut-ads-toggle.trimmed:hover { border-color: #e7b1a4; }
 
 .meta.show-options {
   flex: none;
+  align-items: center;
   gap: 0;
   margin: 4px 0 0;
 }
 
-.meta.show-options span + span::before {
+.meta.show-options > span + span::before {
   content: "·";
   margin: 0 8px;
 }
+
+.option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.option svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+.option-sep { margin: 0 1px; }
 
 .status {
   border-radius: 999px;
@@ -682,11 +699,27 @@ input.scrub::-moz-range-thumb {
 
 button.file-row.playable {
   width: 100%;
+  margin: 0;
   border: 0;
   border-top: 1px solid #2c2d28;
   background: transparent;
   text-align: left;
   color: inherit;
+}
+
+.player-aside {
+  display: flex;
+  align-items: center;
+  align-self: center;
+  gap: 10px;
+  flex: none;
+  margin-left: 12px;
+}
+
+.player-age {
+  color: #9c988c;
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 button.file-row.playing { background: rgba(230, 161, 92, 0.08); }

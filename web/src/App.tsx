@@ -850,9 +850,19 @@ function ShowRow(props: {
         </button>
       </div>
       <p className="meta show-options">
-        {showOptions(props.show).map((option) => (
-          <span key={option}>{option}</span>
-        ))}
+        <span className="option" title={`Start ${formatDuration(props.show.skip_first)}, end ${formatDuration(props.show.skip_last)}`}>
+          <ScissorsMark />
+          {formatDuration(props.show.skip_first)}
+          <span className="option-sep" aria-hidden="true">·</span>
+          {formatDuration(props.show.skip_last)}
+        </span>
+        <span className="option" title={`Speed ${formatSpeed(props.show.playback_speed)}`}>
+          <ClockMark />
+          {formatSpeed(props.show.playback_speed)}
+        </span>
+        <span title={props.show.num_episodes === 1 ? "Keep 1 episode" : `Keep ${props.show.num_episodes} episodes`}>
+          Keep {props.show.num_episodes}
+        </span>
         <span>
           <CutAdsBadge
             on={cutsAds}
@@ -1266,7 +1276,10 @@ function LocalEpisodes(props: {
             </button>
             <span className="file-copy">
               <span className="file-title">{episode.name}</span>
-              <span className="meta">Added {formatAge(episode.mtime)}</span>
+            </span>
+            <span className="player-aside">
+              {episode.duration != null ? <span className="player-age">{formatClock(episode.duration)}</span> : null}
+              <span className="player-age">{formatAge(episode.mtime)}</span>
             </span>
           </li>
         );
@@ -1349,7 +1362,7 @@ function PlayerView(props: {
     props.shows.flatMap((show) => (show.image ? [[show.name, show.image] as const] : [])),
   );
   return (
-    <main className="page">
+    <main className="page player-page">
       {props.error ? <p className="banner">{props.error}</p> : null}
       {!props.episodes && !props.error ? <p className="empty">Loading episodes…</p> : null}
       {props.episodes && props.episodes.length === 0 ? <p className="empty">No local episodes yet.</p> : null}
@@ -1369,10 +1382,12 @@ function PlayerView(props: {
               <span className="file-title">{episode.name}</span>
               <span className="meta">
                 <span>{episode.folder}</span>
-                <span>Added {formatAge(episode.mtime)}</span>
               </span>
             </span>
-            <AdsMark kind={episode.kind} />
+            <span className="player-aside">
+              <span className="player-age">{formatAge(episode.mtime)}</span>
+              <AdsMark kind={episode.kind} />
+            </span>
           </button>
         );
       })}
@@ -1670,14 +1685,23 @@ function statusDetail(status: ShowStatus): string {
   }
 }
 
-function showOptions(show: Show): string[] {
-  const episodes = show.num_episodes === 1 ? "1 episode" : `${show.num_episodes} episodes`;
-  return [
-    `Start ${formatDuration(show.skip_first)}`,
-    `End ${formatDuration(show.skip_last)}`,
-    formatSpeed(show.playback_speed),
-    episodes,
-  ];
+function ScissorsMark() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="6" cy="6" r="3" fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle cx="6" cy="18" r="3" fill="none" stroke="currentColor" strokeWidth="2" />
+      <path d="M8.12 8.12 12 12M20 4 8.12 15.88M14.8 14.8 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ClockMark() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2" />
+      <path d="M12 7v5l3.5 2" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
 }
 
 function folderAdPhrase(folders: { name: string; cut_ads: boolean }[], name: string): string {

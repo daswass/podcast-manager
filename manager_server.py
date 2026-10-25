@@ -1104,7 +1104,7 @@ def _archive_episodes(root, show_names):
                 if not path.is_file() or path.name.startswith("._") or path.suffix.lower() != ".mp3":
                     continue
                 try:
-                    mtime = path.stat().st_mtime
+                    stat = path.stat()
                 except OSError:
                     continue
                 title, show, _remainder = _readable_drive_file(path.name, show_names)
@@ -1114,10 +1114,16 @@ def _archive_episodes(root, show_names):
                     "show": show,
                     "filename": path.name,
                     "path": f"{kind}/{folder.name}/{path.name}",
-                    "mtime": mtime,
+                    "mtime": stat.st_mtime,
                     "kind": kind,
+                    "_duration_path": path,
+                    "_duration_stat": stat,
                 })
     episodes.sort(key=lambda item: item["mtime"], reverse=True)
+    _attach_durations({"": episodes})
+    for episode in episodes:
+        episode.pop("_duration_path", None)
+        episode.pop("_duration_stat", None)
     return episodes
 
 

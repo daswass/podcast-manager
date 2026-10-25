@@ -175,6 +175,7 @@ export type ArchiveEpisode = {
   filename: string;
   path: string;
   mtime: number;
+  duration: number | null;
   kind: "sliced" | "trimmed";
 };
 

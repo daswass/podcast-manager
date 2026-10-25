@@ -582,6 +582,7 @@ class ManagerApiTests(unittest.TestCase):
         ])
         self.assertEqual(episodes[1]["show"], "Up First")
         self.assertEqual(episodes[1]["name"], "Morning")
+        self.assertIn("duration", episodes[1])
         audio = self.client.get("/api/archive/audio", params={"path": episodes[1]["path"]})
         self.assertEqual(audio.status_code, 200)
         self.assertEqual(audio.content, b"sliced-audio")
@@ -600,6 +601,24 @@ class ManagerApiTests(unittest.TestCase):
         self.assertTrue(_on_headphones(Path("/Volumes/SWIMBUDS/News/Episode.mp3")))
         self.assertTrue(_on_headphones(Path("/Volumes/OpenSwim/Music/Episode.mp3")))
         self.assertFalse(_on_headphones(root / "sliced" / "News" / "Up First - Morning.mp3"))
+
+    def test_archive_includes_audio_length(self):
+        root = self.ledger.parent
+        episode = root / "sliced" / "News" / "Up First - Measured.mp3"
+        episode.parent.mkdir(parents=True, exist_ok=True)
+        episode.write_bytes(b"sliced-audio")
+        with patch("manager_server._probe_duration", return_value=754) as probe:
+            listed = self.client.get("/api/archive")
+        self.assertEqual(listed.status_code, 200)
+        match = next(item for item in listed.json()["episodes"] if item["name"] == "Measured")
+        self.assertEqual(match["duration"], 754)
+        self.assertNotIn("_duration_path", match)
+        probe.assert_called_once()
+        with patch("manager_server._probe_duration", return_value=1) as again:
+            cached = self.client.get("/api/archive")
+        again_match = next(item for item in cached.json()["episodes"] if item["name"] == "Measured")
+        self.assertEqual(again_match["duration"], 754)
+        again.assert_not_called()
 
 
 class ShowListTests(unittest.TestCase):
