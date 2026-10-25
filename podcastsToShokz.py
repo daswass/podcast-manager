@@ -28,7 +28,9 @@ config = {
 }
 index = podcastindex.init(config)
 
-TMP_DIR = "/tmp/OpenSwim/"
+# This is both the processing directory and the local, browser-playable archive.
+# Keep it stable: the web UI serves only files below this directory.
+TMP_DIR = "/tmp/podcast-manager"
 LOCAL_TIMEZONE = pytz.timezone('America/New_York')
 
 def print_mp3_duration(audio, num_tabs=0):
@@ -392,7 +394,7 @@ def main(usb_drive_base_dir):
             print(f"       Continuing with other podcasts...")
             continue
 
-    # Move all downloaded and processed episodes to the USB drive
+    # Copy processed episodes to the USB drive, while retaining the local archive.
     if os.path.exists(usb_drive_base_dir):
         print(f"\nProcessing Complete. Copying latest Podcasts to Headphones ...")
         for podcast_name, info in podcast_feeds.items():
@@ -417,9 +419,9 @@ def main(usb_drive_base_dir):
                     src = os.path.join(tmp_category_dir, filename)
                     dst = os.path.join(category_dir, filename)
                     try:
-                        shutil.move(src, dst)
+                        shutil.copy2(src, dst)
                     except (PermissionError, OSError, FileNotFoundError) as e:
-                        print(f"\tWarning: Could not move {filename} to USB drive: {e}")
+                        print(f"\tWarning: Could not copy {filename} to USB drive: {e}")
                         # Continue with other files even if one fails
             except (PermissionError, OSError) as e:
                 print(f"\tWarning: Could not list or move files in {tmp_category_dir}: {e}")
@@ -428,10 +430,15 @@ def main(usb_drive_base_dir):
                 delete_old_episodes(category_dir, podcast_name, episodes_to_keep)
             except (PermissionError, OSError) as e:
                 print(f"\tWarning: Could not prune old episodes in {category_dir}: {e}")
-        
-        shutil.rmtree(TMP_DIR)
 
-        print("Podcast episodes organized and downloaded. Big Day!")
+            # Mirror the headphone's episode limit in the local archive.  Keeping
+            # this beside the USB pruning means both surfaces expose the same set.
+            try:
+                delete_old_episodes(tmp_category_dir, podcast_name, episodes_to_keep)
+            except (PermissionError, OSError) as e:
+                print(f"\tWarning: Could not prune local episodes in {tmp_category_dir}: {e}")
+
+        print("Podcast episodes organized, copied to headphones, and retained locally. Big Day!")
     else:
         print("Error: USB drive not mounted. Please connect the USB drive and try again.")
 

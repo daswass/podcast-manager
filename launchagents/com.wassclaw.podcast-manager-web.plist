@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wassclaw.podcast-manager-web</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/ericwasserman/.openclaw/workspace/repos/podcast-manager/.venv/bin/python</string>
+    <string>/Users/ericwasserman/.openclaw/workspace/repos/podcast-manager/web_ui.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/ericwasserman/.openclaw/workspace/repos/podcast-manager</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/ericwasserman</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>PORT</key>
+    <string>5050</string>
+    <key>PODCAST_ARCHIVE_DIR</key>
+    <string>/tmp/podcast-manager</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/ericwasserman/.openclaw/workspace/var/log/podcast-manager-web.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/ericwasserman/.openclaw/workspace/var/log/podcast-manager-web.log</string>
+</dict>
+</plist>
