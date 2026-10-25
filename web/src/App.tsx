@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 import {
   ApiError,
   createFolder,
@@ -6,6 +6,8 @@ import {
   deleteFolder,
   deleteHeadphoneFile,
   deleteShow,
+  archiveAudioUrl,
+  getArchive,
   getHeadphones,
   getLibrary,
   patchFolder,
@@ -17,6 +19,7 @@ import {
   type Folder,
   type HeadphoneFile,
   type ShowPatch,
+  type ArchiveEpisode,
   type HeadphoneVolume,
   type JobActivity,
   type Library,
@@ -25,9 +28,99 @@ import {
   type ShowStatus,
 } from "./api";
 
-type View = "library" | "headphones";
+type View = "library" | "player" | "headphones";
+
+type Playback = {
+  current: ArchiveEpisode | null;
+  playing: boolean;
+  progress: number;
+  duration: number;
+  play: (episode: ArchiveEpisode) => void;
+  toggle: () => void;
+  seek: (seconds: number) => void;
+  close: () => void;
+};
+
+function isLocalArchivePath(path: string): boolean {
+  return path.startsWith("sliced/") || path.startsWith("trimmed/");
+}
+
+function usePlayback(): Playback & { audioRef: RefObject<HTMLAudioElement | null> } {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [current, setCurrent] = useState<ArchiveEpisode | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const onTime = () => setProgress(audio.currentTime || 0);
+    const onMeta = () => setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
+    const onPlay = () => setPlaying(true);
+    const onPause = () => setPlaying(false);
+    audio.addEventListener("timeupdate", onTime);
+    audio.addEventListener("loadedmetadata", onMeta);
+    audio.addEventListener("durationchange", onMeta);
+    audio.addEventListener("play", onPlay);
+    audio.addEventListener("pause", onPause);
+    audio.addEventListener("ended", onPause);
+    return () => {
+      audio.removeEventListener("timeupdate", onTime);
+      audio.removeEventListener("loadedmetadata", onMeta);
+      audio.removeEventListener("durationchange", onMeta);
+      audio.removeEventListener("play", onPlay);
+      audio.removeEventListener("pause", onPause);
+      audio.removeEventListener("ended", onPause);
+    };
+  }, []);
+
+  function play(episode: ArchiveEpisode) {
+    const audio = audioRef.current;
+    if (!audio || !isLocalArchivePath(episode.path)) return;
+    if (current?.path === episode.path) {
+      if (audio.paused) void audio.play().catch(() => undefined);
+      else audio.pause();
+      return;
+    }
+    setCurrent(episode);
+    setProgress(0);
+    setDuration(0);
+    audio.src = archiveAudioUrl(episode.path);
+    void audio.play().catch(() => undefined);
+  }
+
+  function toggle() {
+    const audio = audioRef.current;
+    if (!audio || !audio.src) return;
+    if (audio.paused) void audio.play().catch(() => undefined);
+    else audio.pause();
+  }
+
+  function seek(seconds: number) {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.currentTime = seconds;
+    setProgress(seconds);
+  }
+
+  function close() {
+    const audio = audioRef.current;
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+    }
+    setCurrent(null);
+    setPlaying(false);
+    setProgress(0);
+    setDuration(0);
+  }
+
+  return { audioRef, current, playing, progress, duration, play, toggle, seek, close };
+}
+
 type DropTarget = { name: string; place: "before" | "after" };
-type CutMode = "on" | "off" | "inherit";
 type Save = (key: string, run: (version: string) => Promise<Library>) => Promise<string | null>;
 
 export function App() {
@@ -38,6 +131,9 @@ export function App() {
   const [resetToken, setResetToken] = useState(0);
   const [activeFolder, setActiveFolder] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [archive, setArchive] = useState<ArchiveEpisode[] | null>(null);
+  const [archiveError, setArchiveError] = useState("");
+  const playback = usePlayback();
   const versionRef = useRef("");
   const generation = useRef(0);
   const hasLibrary = useRef(false);
@@ -81,8 +177,17 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
+    let running = false;
+    let again = false;
 
     async function load() {
+      if (cancelled) return;
+      if (running) {
+        again = true;
+        return;
+      }
+      running = true;
+      again = false;
       const seen = generation.current;
       try {
         const next = await getLibrary();
@@ -92,10 +197,16 @@ export function App() {
         setLibrary(next);
         setLoadError("");
       } catch (error) {
-        if (cancelled) return;
+        if (cancelled || seen !== generation.current) return;
         const message = error instanceof Error ? error.message : "Could not load the library";
         if (hasLibrary.current) setNotice(message);
         else setLoadError(message);
+      } finally {
+        running = false;
+        if (!cancelled && (again || seen !== generation.current)) {
+          again = false;
+          void load();
+        }
       }
     }
 
@@ -107,8 +218,22 @@ export function App() {
     };
   }, []);
 
+  async function reloadArchive() {
+    try {
+      setArchive(await getArchive());
+      setArchiveError("");
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error.message : "Could not read the local episodes");
+    }
+  }
+
+  useEffect(() => {
+    void reloadArchive();
+  }, []);
+
   return (
-    <div className="shell">
+    <div className={`shell${playback.current ? " with-player" : ""}`}>
+      <audio ref={playback.audioRef} className="player-audio" preload="metadata" />
       <header className="topbar">
         <div>
           <p className="brand">Podcast Manager</p>
@@ -119,6 +244,9 @@ export function App() {
           <nav className="nav">
           <button type="button" className={view === "library" ? "active" : ""} onClick={() => setView("library")}>
             Library
+          </button>
+          <button type="button" className={view === "player" ? "active" : ""} onClick={() => setView("player")}>
+            Player
           </button>
           <button
             type="button"
@@ -164,8 +292,13 @@ export function App() {
               if (error instanceof ApiError && error.status === 409) await reloadFromDisk();
             }
           }}
+          archive={archive}
+          archiveError={archiveError}
+          onOpenEpisodes={() => void reloadArchive()}
+          playback={playback}
         />
       ) : null}
+      <PlayerDock playback={playback} shows={library?.shows ?? []} />
     </div>
   );
 }
@@ -214,6 +347,10 @@ function Main(props: {
   onNotice: (message: string) => void;
   onPrepare: (feedId: number) => Promise<void>;
   onCutAds: (feedId: number) => Promise<void>;
+  archive: ArchiveEpisode[] | null;
+  archiveError: string;
+  onOpenEpisodes: () => void;
+  playback: Playback;
 }) {
   switch (props.view) {
     case "library":
@@ -229,6 +366,19 @@ function Main(props: {
           onNotice={props.onNotice}
           onPrepare={props.onPrepare}
           onCutAds={props.onCutAds}
+          archive={props.archive}
+          archiveError={props.archiveError}
+          onOpenEpisodes={props.onOpenEpisodes}
+          playback={props.playback}
+        />
+      );
+    case "player":
+      return (
+        <PlayerView
+          shows={props.library.shows}
+          episodes={props.archive}
+          error={props.archiveError}
+          playback={props.playback}
         />
       );
     case "headphones":
@@ -284,6 +434,10 @@ function LibraryView(props: {
   onNotice: (message: string) => void;
   onPrepare: (feedId: number) => Promise<void>;
   onCutAds: (feedId: number) => Promise<void>;
+  archive: ArchiveEpisode[] | null;
+  archiveError: string;
+  onOpenEpisodes: () => void;
+  playback: Playback;
 }) {
   const [folderName, setFolderName] = useState("");
   const [preview, setPreview] = useState<string[] | null>(null);
@@ -415,6 +569,10 @@ function LibraryView(props: {
           onNotice={props.onNotice}
           onPrepare={props.onPrepare}
           onCutAds={props.onCutAds}
+          archive={props.archive}
+          archiveError={props.archiveError}
+          onOpenEpisodes={props.onOpenEpisodes}
+          playback={props.playback}
         />
       ))}
       {props.adding && initialFolder ? (
@@ -447,6 +605,10 @@ function FolderSection(props: {
   onNotice: (message: string) => void;
   onPrepare: (feedId: number) => Promise<void>;
   onCutAds: (feedId: number) => Promise<void>;
+  archive: ArchiveEpisode[] | null;
+  archiveError: string;
+  onOpenEpisodes: () => void;
+  playback: Playback;
 }) {
   const [name, setName] = useState(props.folder.name);
   const [cutAds, setCutAds] = useState(props.folder.cut_ads);
@@ -531,20 +693,17 @@ function FolderSection(props: {
             timer.current = window.setTimeout(() => commitName(nameRef.current), 300);
           }}
         />
-        <label className="switch">
-          <input
-            type="checkbox"
-            checked={cutAds}
-            onChange={(event) => {
-              const checked = event.target.checked;
-              setCutAds(checked);
-              void props.enqueue(props.queueKey, (version) =>
-                patchFolder(serverName.current, { version, cut_ads: checked }),
-              );
-            }}
-          />
-          Cut ads
-        </label>
+        <CutAdsBadge
+          on={cutAds}
+          title={cutAds ? "This folder cuts ads. Click to keep them." : "This folder keeps ads. Click to cut them."}
+          onToggle={() => {
+            const next = !cutAds;
+            setCutAds(next);
+            void props.enqueue(props.queueKey, (version) =>
+              patchFolder(serverName.current, { version, cut_ads: next }),
+            );
+          }}
+        />
         <button
           type="button"
           className="quiet danger-text"
@@ -572,11 +731,19 @@ function FolderSection(props: {
           enqueue={props.enqueue}
           onToggle={() => {
             props.onActivate();
-            setOpenFeed((current) => (current === show.feed_id ? null : show.feed_id));
+            setOpenFeed((current) => {
+              const next = current === show.feed_id ? null : show.feed_id;
+              if (next !== null) props.onOpenEpisodes();
+              return next;
+            });
           }}
           onNotice={props.onNotice}
           onPrepare={props.onPrepare}
           onCutAds={props.onCutAds}
+          episodes={props.archive?.filter((episode) => episode.show === show.name) ?? []}
+          archiveReady={props.archive !== null}
+          archiveError={props.archiveError}
+          playback={props.playback}
         />
       ))}
     </section>
@@ -596,9 +763,17 @@ function ShowRow(props: {
   onNotice: (message: string) => void;
   onPrepare: (feedId: number) => Promise<void>;
   onCutAds: (feedId: number) => Promise<void>;
+  episodes: ArchiveEpisode[];
+  archiveReady: boolean;
+  archiveError: string;
+  playback: Playback;
 }) {
   const preparing = props.show.status === "preparing";
   const reason = preparing ? "Preparing this show" : props.prepareReason;
+  const [cutsAds, setCutsAds] = useState(props.show.effective_cut_ads);
+  useEffect(() => {
+    setCutsAds(props.show.effective_cut_ads);
+  }, [props.show.effective_cut_ads]);
   return (
     <article className="show" data-feed={props.show.feed_id}>
       <div className="show-main">
@@ -661,20 +836,52 @@ function ShowRow(props: {
         >
           {preparing ? "Preparing" : "Prepare"}
         </button>
+        <button
+          type="button"
+          className="trash"
+          aria-label={`Remove ${props.show.name}`}
+          title={`Remove ${props.show.name}`}
+          onClick={() => {
+            if (!window.confirm(`Remove ${props.show.name} from the library? Audio files stay.`)) return;
+            void props.enqueue(`show-${props.show.feed_id}`, (version) => deleteShow(props.show.feed_id, version));
+          }}
+        >
+          <TrashMark />
+        </button>
       </div>
       <p className="meta show-options">
         {showOptions(props.show).map((option) => (
           <span key={option}>{option}</span>
         ))}
+        <span>
+          <CutAdsBadge
+            on={cutsAds}
+            title={showCutAdsTitle(props.show, cutsAds)}
+            onToggle={() => {
+              const next = !cutsAds;
+              setCutsAds(next);
+              void props.enqueue(`show-${props.show.feed_id}`, (version) =>
+                patchShow(props.show.feed_id, { version, cut_ads: next }),
+              );
+            }}
+          />
+        </span>
       </p>
       {props.show.error ? <p className="row-error">{props.show.error}</p> : null}
+      {props.open ? (
+        <LocalEpisodes
+          episodes={props.episodes}
+          ready={props.archiveReady}
+          error={props.archiveError}
+          playback={props.playback}
+        />
+      ) : null}
       {props.open ? (
         <ShowEditor
           show={props.show}
           folders={props.folders}
           resetToken={props.resetToken}
           enqueue={props.enqueue}
-          onNotice={props.onNotice}
         />
       ) : null}
     </article>
@@ -714,7 +921,6 @@ function ShowEditor(props: {
   folders: { name: string; cut_ads: boolean }[];
   resetToken: number;
   enqueue: Save;
-  onNotice: (message: string) => void;
 }) {
   const [draft, setDraft] = useState<Draft>(() => draftFrom(props.show));
   const focused = useRef(false);
@@ -842,37 +1048,30 @@ function ShowEditor(props: {
         />
       </label>
       <div className="cut-ads">
-        <span>Cut ads</span>
-        <div className="segmented">
-          {(["on", "off", "inherit"] as CutMode[]).map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              className={modeOf(draft.cutAds) === mode ? "active" : ""}
-              onClick={() => {
-                const cutAds = cutAdsValue(mode);
-                setDraft({ ...draft, cutAds });
-                save({ cut_ads: cutAds }, 0, "cut_ads");
-              }}
-            >
-              {cutModeLabel(mode)}
-            </button>
-          ))}
-        </div>
+        <CutAdsBadge
+          on={effectiveDraftCutAds(props.folders, draft)}
+          title={draft.cutAds === null ? folderAdPhrase(props.folders, draft.folder) : showCutAdsTitle(props.show, draft.cutAds)}
+          onToggle={() => {
+            const cutAds = !effectiveDraftCutAds(props.folders, draft);
+            setDraft({ ...draft, cutAds });
+            save({ cut_ads: cutAds }, 0, "cut_ads");
+          }}
+        />
         {draft.cutAds === null ? (
           <span className="hint">{folderAdPhrase(props.folders, draft.folder)}</span>
-        ) : null}
+        ) : (
+          <button
+            type="button"
+            className="quiet"
+            onClick={() => {
+              setDraft({ ...draft, cutAds: null });
+              save({ cut_ads: null }, 0, "cut_ads");
+            }}
+          >
+            Use folder setting
+          </button>
+        )}
       </div>
-      <button
-        type="button"
-        className="quiet danger-text"
-        onClick={() => {
-          if (!window.confirm(`Remove ${props.show.name} from the library? Audio files stay.`)) return;
-          void props.enqueue(`show-${props.show.feed_id}`, (version) => deleteShow(props.show.feed_id, version));
-        }}
-      >
-        Remove show
-      </button>
     </div>
   );
 }
@@ -1042,36 +1241,207 @@ function AddShowDialog(props: {
   );
 }
 
+function LocalEpisodes(props: {
+  episodes: ArchiveEpisode[];
+  ready: boolean;
+  error: string;
+  playback: Playback;
+}) {
+  if (props.error) return <p className="row-error local-note">{props.error}</p>;
+  if (!props.ready) return <p className="empty-row local-note">Loading episodes…</p>;
+  if (props.episodes.length === 0) return <p className="empty-row local-note">No local episodes yet.</p>;
+  return (
+    <ul className="local-episodes">
+      {props.episodes.map((episode) => {
+        const current = props.playback.current?.path === episode.path;
+        const playing = current && props.playback.playing;
+        return (
+          <li key={episode.path} className={["local-episode", current ? "current" : "", playing ? "playing" : ""].filter(Boolean).join(" ")}>
+            <button
+              type="button"
+              className="play-mini"
+              onClick={() => props.playback.play(episode)}
+            >
+              {playing ? "Pause" : "Play"}
+            </button>
+            <span className="file-copy">
+              <span className="file-title">{episode.name}</span>
+              <span className="meta">Added {formatAge(episode.mtime)}</span>
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function PlayerDock(props: { playback: Playback; shows: Show[] }) {
+  const episode = props.playback.current;
+  if (!episode) return null;
+  const art = episode.show ? props.shows.find((show) => show.name === episode.show)?.image : null;
+  const duration = props.playback.duration;
+  const ratio = duration > 0 ? Math.min(props.playback.progress, duration) / duration : 0;
+  return (
+    <section className={`player-dock${props.playback.playing ? "" : " is-paused"}`} aria-label="Player">
+      {art ? <ShowArt src={art} /> : <span className="player-art-fallback" aria-hidden="true" />}
+      <div className="player-copy">
+        <p className="player-title">{episode.name}</p>
+        {episode.show ? <p className="player-show">{episode.show}</p> : null}
+      </div>
+      {props.playback.playing ? null : (
+        <button type="button" className="player-close" onClick={props.playback.close} aria-label="Close player">
+          <CloseMark />
+        </button>
+      )}
+      <button type="button" className="play-main" onClick={props.playback.toggle} aria-label={props.playback.playing ? "Pause" : "Play"}>
+        {props.playback.playing ? <PauseMark /> : <PlayMark />}
+      </button>
+      <div className="player-scrub">
+        <span className="player-time">{formatClock(props.playback.progress)}</span>
+        <input
+          className="scrub"
+          type="range"
+          min={0}
+          max={duration || 0}
+          step={0.1}
+          value={Math.min(props.playback.progress, duration || 0)}
+          style={{ "--progress": `${ratio * 100}%` } as CSSProperties}
+          aria-label="Playback position"
+          onChange={(event) => props.playback.seek(Number(event.target.value))}
+        />
+        <span className="player-time">{formatClock(duration)}</span>
+      </div>
+    </section>
+  );
+}
+
+function PlayMark() {
+  return (
+    <svg className="play-glyph" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 5.5v13l11-6.5-11-6.5z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function PauseMark() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 5h3.2v14H7V5zm6.8 0H17v14h-3.2V5z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function CloseMark() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 7l10 10M17 7L7 17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PlayerView(props: {
+  shows: Show[];
+  episodes: ArchiveEpisode[] | null;
+  error: string;
+  playback: Playback;
+}) {
+  const artByShow = new Map(
+    props.shows.flatMap((show) => (show.image ? [[show.name, show.image] as const] : [])),
+  );
+  return (
+    <main className="page">
+      {props.error ? <p className="banner">{props.error}</p> : null}
+      {!props.episodes && !props.error ? <p className="empty">Loading episodes…</p> : null}
+      {props.episodes && props.episodes.length === 0 ? <p className="empty">No local episodes yet.</p> : null}
+      {props.episodes?.map((episode) => {
+        const art = episode.show ? artByShow.get(episode.show) : undefined;
+        const playing = props.playback.current?.path === episode.path;
+        return (
+          <button
+            key={episode.path}
+            type="button"
+            className={`file-row playable${playing ? " playing" : ""}`}
+            onClick={() => props.playback.play(episode)}
+          >
+            {art ? <ShowArt src={art} /> : null}
+            <span className="file-copy">
+              {episode.show ? <span className="file-show">{episode.show}</span> : null}
+              <span className="file-title">{episode.name}</span>
+              <span className="meta">
+                <span>{episode.folder}</span>
+                <span>Added {formatAge(episode.mtime)}</span>
+              </span>
+            </span>
+            <AdsMark kind={episode.kind} />
+          </button>
+        );
+      })}
+    </main>
+  );
+}
+
+function withoutFile(volumes: HeadphoneVolume[] | null, volume: string, path: string): HeadphoneVolume[] | null {
+  if (!volumes) return volumes;
+  return volumes.map((item) => {
+    if (item.name !== volume) return item;
+    return {
+      ...item,
+      folders: item.folders
+        .map((folder) => ({
+          ...folder,
+          files: folder.files.filter((file) => file.path !== path),
+        }))
+        .filter((folder) => folder.files.length > 0),
+    };
+  });
+}
+
 function HeadphonesView(props: { shows: Show[]; onNotice: (message: string) => void }) {
   const [volumes, setVolumes] = useState<HeadphoneVolume[] | null>(null);
   const [error, setError] = useState("");
-
-  async function refresh() {
-    try {
-      setVolumes(await getHeadphones());
-      setError("");
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Could not read the headphones");
-    }
-  }
+  const epoch = useRef(0);
+  const reload = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     let cancelled = false;
+    let running = false;
+    let again = false;
+
     async function load() {
+      if (cancelled) return;
+      if (running) {
+        again = true;
+        return;
+      }
+      running = true;
+      again = false;
+      const seen = epoch.current;
       try {
         const next = await getHeadphones();
-        if (!cancelled) {
-          setVolumes(next);
-          setError("");
-        }
+        if (cancelled || seen !== epoch.current) return;
+        setVolumes(next);
+        setError("");
       } catch (loadError) {
-        if (!cancelled) setError(loadError instanceof Error ? loadError.message : "Could not read the headphones");
+        if (!cancelled && seen === epoch.current) {
+          setError(loadError instanceof Error ? loadError.message : "Could not read the headphones");
+        }
+      } finally {
+        running = false;
+        if (!cancelled && (again || seen !== epoch.current)) {
+          again = false;
+          void load();
+        }
       }
     }
+
+    reload.current = () => {
+      void load();
+    };
     void load();
     const id = window.setInterval(() => void load(), 1000);
     return () => {
       cancelled = true;
+      epoch.current += 1;
       window.clearInterval(id);
     };
   }, []);
@@ -1079,18 +1449,22 @@ function HeadphonesView(props: { shows: Show[]; onNotice: (message: string) => v
   async function remove(volume: string, file: HeadphoneFile) {
     const label = file.show ? `${file.show}: ${file.name}` : file.name;
     if (!window.confirm(`Delete ${label} from ${volume}? The copy on this Mac stays.`)) return;
+    epoch.current += 1;
+    setVolumes((current) => withoutFile(current, volume, file.path));
     try {
       await deleteHeadphoneFile(volume, file.path);
-      await refresh();
     } catch (deleteError) {
-      if (deleteError instanceof ApiError && deleteError.status === 404) {
-        await refresh();
+      if (!(deleteError instanceof ApiError && deleteError.status === 404)) {
+        const message = deleteError instanceof Error ? deleteError.message : "Could not delete that file";
+        setError(message);
+        props.onNotice(message);
+        epoch.current += 1;
+        reload.current();
         return;
       }
-      const message = deleteError instanceof Error ? deleteError.message : "Could not delete that file";
-      setError(message);
-      props.onNotice(message);
     }
+    epoch.current += 1;
+    reload.current();
   }
 
   const artByShow = new Map(
@@ -1167,40 +1541,35 @@ function parseSpeed(value: string): number | null {
   return parsed;
 }
 
-function modeOf(cutAds: boolean | null): CutMode {
-  if (cutAds === true) return "on";
-  if (cutAds === false) return "off";
-  return "inherit";
+function CutAdsBadge(props: { on: boolean; title: string; onToggle: () => void }) {
+  const label = props.on ? "Cut ads" : "Keep ads";
+  return (
+    <button
+      type="button"
+      className={`status cut-ads-toggle ${props.on ? "sliced" : "trimmed"}`}
+      aria-pressed={props.on}
+      aria-label={label}
+      title={props.title}
+      onClick={props.onToggle}
+    >
+      {label}
+    </button>
+  );
 }
 
-function cutAdsValue(mode: CutMode): boolean | null {
-  switch (mode) {
-    case "on":
-      return true;
-    case "off":
-      return false;
-    case "inherit":
-      return null;
-    default: {
-      const unexpected: never = mode;
-      return unexpected;
-    }
-  }
+function effectiveDraftCutAds(folders: { name: string; cut_ads: boolean }[], draft: Draft): boolean {
+  if (draft.cutAds !== null) return draft.cutAds;
+  return folders.find((folder) => folder.name === draft.folder)?.cut_ads ?? true;
 }
 
-function cutModeLabel(mode: CutMode): string {
-  switch (mode) {
-    case "on":
-      return "Cut";
-    case "off":
-      return "Keep";
-    case "inherit":
-      return "Folder";
-    default: {
-      const unexpected: never = mode;
-      return unexpected;
-    }
+function showCutAdsTitle(show: Show, on: boolean): string {
+  const inherited = show.cut_ads === null && on === show.effective_cut_ads;
+  if (inherited) {
+    return on
+      ? `${show.folder} cuts ads, and this show follows it. Click to keep ads for this show.`
+      : `${show.folder} keeps ads, and this show follows it. Click to cut ads for this show.`;
   }
+  return on ? "This show cuts ads. Click to keep them." : "This show keeps ads. Click to cut them.";
 }
 
 function HeadphonesMark() {
@@ -1217,6 +1586,55 @@ function HeadphonesMark() {
       <rect x="21.5" y="15.2" width="4.4" height="8" rx="1.6" fill="currentColor" />
     </svg>
   );
+}
+
+function TrashMark() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M9 4.8h6M5.2 7.2h13.6M8.2 7.2l.6 11.4a1.4 1.4 0 0 0 1.4 1.3h3.6a1.4 1.4 0 0 0 1.4-1.3l.6-11.4M10.2 10.2v6M13.8 10.2v6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function AdsMark(props: { kind: ArchiveEpisode["kind"] }) {
+  return (
+    <span className={`status ${props.kind}`} title={adsDetail(props.kind)}>
+      {adsLabel(props.kind)}
+    </span>
+  );
+}
+
+function adsLabel(kind: ArchiveEpisode["kind"]): string {
+  switch (kind) {
+    case "sliced":
+      return "Ads cut";
+    case "trimmed":
+      return "Ads kept";
+    default: {
+      const unexpected: never = kind;
+      return unexpected;
+    }
+  }
+}
+
+function adsDetail(kind: ArchiveEpisode["kind"]): string {
+  switch (kind) {
+    case "sliced":
+      return "Ads were removed from this episode.";
+    case "trimmed":
+      return "This episode kept its ads.";
+    default: {
+      const unexpected: never = kind;
+      return unexpected;
+    }
+  }
 }
 
 function statusLabel(status: ShowStatus): string {
@@ -1259,7 +1677,6 @@ function showOptions(show: Show): string[] {
     `End ${formatDuration(show.skip_last)}`,
     formatSpeed(show.playback_speed),
     episodes,
-    show.effective_cut_ads ? "Cut ads" : "Keep ads",
   ];
 }
 
@@ -1309,6 +1726,17 @@ function formatAge(seconds: number): string {
   if (months < 24) return months === 1 ? "1 month ago" : `${months} months ago`;
   const years = Math.floor(days / 365);
   return years === 1 ? "1 year ago" : `${years} years ago`;
+}
+
+function formatClock(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const whole = Math.floor(seconds);
+  const hours = Math.floor(whole / 3600);
+  const minutes = Math.floor((whole % 3600) / 60);
+  const remainder = whole % 60;
+  const sec = String(remainder).padStart(2, "0");
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${sec}`;
+  return `${minutes}:${sec}`;
 }
 
 function formatDuration(seconds: number): string {

@@ -1,8 +1,11 @@
+import errno
 import io
 import json
 import os
+import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -11,7 +14,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from library import effective_cut_ads, feed_settings, load_library
-from manager_server import _DRIVE_FILES_CACHE, _job_flags, create_app
+from manager_server import _DRIVE_FILES_CACHE, _job_flags, _on_headphones, create_app
 from podcastsToShokz import TMP_RUNNING_MARKER
 from podcastsToShokz import load_podcast_feeds, select_feeds
 
@@ -360,6 +363,7 @@ class ManagerApiTests(unittest.TestCase):
         )
         self.assertEqual(gone.status_code, 200)
         self.assertFalse(episode.exists())
+        self.assertFalse((self.drive / "News" / "._Up First.mp3").exists())
         missing = self.client.request(
             "DELETE",
             "/api/headphones",
@@ -373,6 +377,34 @@ class ManagerApiTests(unittest.TestCase):
         )
         self.assertEqual(marker.status_code, 400)
         self.assertTrue((self.drive / "podcast_downloader_running.txt").exists())
+
+    def test_delete_updates_the_library_badge_without_waiting_for_the_cache(self):
+        self.feed_episodes[1] = {"Latest_Show": 5_000}
+        episode = self.drive / "News" / "Up First - Latest_Show.mp3"
+        episode.write_bytes(b"audio")
+        _DRIVE_FILES_CACHE.clear()
+        self.assertIs(self.client.get("/api/library").json()["shows"][0]["on_headphones"], True)
+        gone = self.client.request(
+            "DELETE",
+            "/api/headphones",
+            json={"volume": "SWIMBUDS", "path": "News/Up First - Latest_Show.mp3"},
+        )
+        self.assertEqual(gone.status_code, 200)
+        self.assertFalse(episode.exists())
+        self.assertIs(self.client.get("/api/library").json()["shows"][0]["on_headphones"], False)
+
+    def test_delete_reports_a_busy_file_and_leaves_it_in_place(self):
+        episode = self.drive / "News" / "Up First.mp3"
+        episode.write_bytes(b"audio")
+        with patch("manager_server._commit_unlink", side_effect=OSError(errno.EBUSY, "Resource busy")):
+            response = self.client.request(
+                "DELETE",
+                "/api/headphones",
+                json={"volume": "SWIMBUDS", "path": "News/Up First.mp3"},
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("Resource busy", response.json()["error"])
+        self.assertTrue(episode.exists())
 
     def test_headphone_titles_turn_underscores_into_words(self):
         episode = self.drive / "News" / "Up First - Are_Private_Equity_Firms_Plundering_the_U.S._Economy.mp3"
@@ -528,6 +560,46 @@ class ManagerApiTests(unittest.TestCase):
         self.assertEqual(show["status"], "sliced")
         self.assertTrue(show["cut_ads_inherited"])
         self.assertTrue(show["effective_cut_ads"])
+
+    def test_archive_plays_local_episodes_and_refuses_other_paths(self):
+        root = self.ledger.parent
+        sliced = root / "sliced" / "News" / "Up First - Morning.mp3"
+        trimmed = root / "trimmed" / "Music" / "Heldeep Radio - Night.mp3"
+        original = root / "originals" / "1" / "9.mp3"
+        for path, content in ((sliced, b"sliced-audio"), (trimmed, b"trimmed-audio"), (original, b"original-audio")):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        now = time.time()
+        os.utime(sliced, (now, now))
+        os.utime(trimmed, (now + 5, now + 5))
+
+        listed = self.client.get("/api/archive")
+        self.assertEqual(listed.status_code, 200)
+        episodes = listed.json()["episodes"]
+        self.assertEqual([episode["path"] for episode in episodes], [
+            "trimmed/Music/Heldeep Radio - Night.mp3",
+            "sliced/News/Up First - Morning.mp3",
+        ])
+        self.assertEqual(episodes[1]["show"], "Up First")
+        self.assertEqual(episodes[1]["name"], "Morning")
+        audio = self.client.get("/api/archive/audio", params={"path": episodes[1]["path"]})
+        self.assertEqual(audio.status_code, 200)
+        self.assertEqual(audio.content, b"sliced-audio")
+        blocked = self.client.get("/api/archive/audio", params={"path": "sliced/../../secrets.mp3"})
+        self.assertEqual(blocked.status_code, 400)
+        outside_root = Path(self.tmp.name + "-outside")
+        outside = outside_root / "On Headphones.mp3"
+        outside.parent.mkdir()
+        self.addCleanup(lambda: shutil.rmtree(outside_root, ignore_errors=True))
+        outside.write_bytes(b"headphone-audio")
+        link = root / "sliced" / "News" / "Up First - Linked.mp3"
+        link.symlink_to(outside)
+        linked = self.client.get("/api/archive/audio", params={"path": "sliced/News/Up First - Linked.mp3"})
+        self.assertEqual(linked.status_code, 400)
+        self.assertEqual(outside.read_bytes(), b"headphone-audio")
+        self.assertTrue(_on_headphones(Path("/Volumes/SWIMBUDS/News/Episode.mp3")))
+        self.assertTrue(_on_headphones(Path("/Volumes/OpenSwim/Music/Episode.mp3")))
+        self.assertFalse(_on_headphones(root / "sliced" / "News" / "Up First - Morning.mp3"))
 
 
 class ShowListTests(unittest.TestCase):

@@ -14,4 +14,3 @@ uvicorn==0.54.0
 httpx==0.28.1
 mlx-whisper==0.4.3
 mlx-lm==0.32.2
-Flask>=3.0,<4.0

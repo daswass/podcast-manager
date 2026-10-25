@@ -168,6 +168,24 @@ export function resolveFeed(query: string): Promise<ResolvedShow> {
   });
 }
 
+export type ArchiveEpisode = {
+  folder: string;
+  name: string;
+  show: string | null;
+  filename: string;
+  path: string;
+  mtime: number;
+  kind: "sliced" | "trimmed";
+};
+
+export function getArchive(): Promise<ArchiveEpisode[]> {
+  return request<{ episodes: ArchiveEpisode[] }>("/api/archive").then((body) => body.episodes);
+}
+
+export function archiveAudioUrl(path: string): string {
+  return `/api/archive/audio?path=${encodeURIComponent(path)}`;
+}
+
 export function getHeadphones(): Promise<HeadphoneVolume[]> {
   return request<{ volumes: HeadphoneVolume[] }>("/api/headphones").then((body) => body.volumes);
 }

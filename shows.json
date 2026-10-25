@@ -140,7 +140,7 @@
       "name": "The Intelligence",
       "feed_id": 743611,
       "folder": "News",
-      "skip_first": 0,
+      "skip_first": 15,
       "skip_last": 0,
       "playback_speed": 1.4,
       "num_episodes": 1,

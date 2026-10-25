@@ -1,8 +1,11 @@
+import json
+import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
-from episode_ledger import EpisodeLedger, refresh_needs_copy
+from episode_ledger import EpisodeLedger, prune_local_archive, refresh_needs_copy
 from episode_pipeline import prepare_plan, run_prepare, run_sync, sync_plan
 
 
@@ -290,6 +293,47 @@ class PipelineTest(unittest.TestCase):
             ledger.update(10, 7, copied_sliced=True)
             refresh_needs_copy(ledger, flag)
             self.assertFalse(flag.exists())
+
+    def test_local_archive_keeps_two_weeks_and_the_newest_episode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            now = 1_800_000_000
+            day = 24 * 60 * 60
+            old = now - 20 * day
+            recent = now - 3 * day
+            ledger = EpisodeLedger(root / "ledger.json")
+            old_daily = root / "originals" / "1" / "old.mp3"
+            recent_daily = root / "sliced" / "News" / "recent.mp3"
+            only_old = root / "trimmed" / "Music" / "only.mp3"
+            orphan = root / "comparisons" / "9" / "original.mp3"
+            fresh_orphan = root / "trimmed" / "News" / "loose.mp3"
+            for path in (old_daily, recent_daily, only_old, orphan, fresh_orphan):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"audio")
+            ledger.update(1, 1, published=old, original_path=str(old_daily))
+            ledger.update(1, 2, published=recent, sliced_path=str(recent_daily))
+            ledger.update(2, 3, published=old, trimmed_path=str(only_old))
+            os.utime(orphan, (old, old))
+            os.utime(fresh_orphan, (now, now))
+            (root / "needs_copy").write_text("1\n")
+            timing = root / "timing.jsonl"
+            old_at = datetime.fromtimestamp(old, timezone.utc).isoformat()
+            recent_at = datetime.fromtimestamp(recent, timezone.utc).isoformat()
+            timing.write_text(json.dumps({"at": old_at}) + "\n" + json.dumps({"at": recent_at}) + "\n")
+
+            prune_local_archive(ledger, root, now=now)
+
+            self.assertFalse(old_daily.exists())
+            self.assertTrue(recent_daily.exists())
+            self.assertTrue(only_old.exists())
+            self.assertFalse(orphan.exists())
+            self.assertTrue(fresh_orphan.exists())
+            self.assertIsNone(ledger.get(1, 1))
+            self.assertIsNotNone(ledger.get(1, 2))
+            self.assertIsNotNone(ledger.get(2, 3))
+            self.assertTrue((root / "needs_copy").exists())
+            kept = [json.loads(line)["at"] for line in timing.read_text().splitlines()]
+            self.assertEqual(kept, [recent_at])
 
 
 if __name__ == "__main__":

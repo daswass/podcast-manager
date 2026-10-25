@@ -56,6 +56,8 @@ Local files live in `~/Library/Application Support/podcast-manager/`:
 
 The headphones get one file per show (two for Deep House Moscow), under `BioHack`, `Finance`, `News`, `Second Takes`, `Heroic`, or `Music`.
 
+Local files older than two weeks are removed when a prepare or copy runs, and when the page loads its local episodes. The newest episode of each show stays, so a show that posts less often still has a file.
+
 ## How sponsor reads are removed
 
 Spoken shows use publisher chapters whose titles are ads, sponsors, or promos, plus a local model (`mlx-community/Qwen2.5-7B-Instruct-4bit`) over a Whisper transcript (`mlx-community/whisper-large-v3-turbo`). The model marks the lines that belong to each sponsor read. A short phrase list is used only when the model does not run.
@@ -105,10 +107,4 @@ Clublife’s Podcast Index feed is Tiësto’s show, currently published under t
 
 ## Local player
 
-Processed episodes stay under `~/Library/Application Support/podcast-manager`. This serves that archive in the browser:
-
-```bash
-./scripts/install-web-player.sh
-```
-
-The script installs a per-user LaunchAgent for this checkout and starts the player at http://127.0.0.1:5050. For a one-off run, use `./venv/bin/python web_ui.py`. Set `PODCAST_ARCHIVE_DIR` to serve a different folder.
+Open a show in the library to play the episodes kept for that show. The Player tab lists every episode under `sliced/` and `trimmed/` in `~/Library/Application Support/podcast-manager`. Copying to the headphones leaves those files in place.

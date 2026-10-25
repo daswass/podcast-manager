@@ -15,7 +15,7 @@ import pytz
 from ad_detect import chapter_spans, choose_cut_spans, classify_transcript, tighten_spans
 from ad_model import complete_ad_prompt
 from ad_slices import cut_ads, find_ad_spans
-from episode_ledger import EpisodeLedger, refresh_needs_copy, support_dir
+from episode_ledger import EpisodeLedger, prune_local_archive, refresh_needs_copy, support_dir
 from episode_pipeline import run_prepare, run_sync
 from library import LibraryError, feed_settings, load_library
 from whisper_transcribe import transcribe_episode
@@ -536,6 +536,7 @@ def _run_podcast_update(usb_drive_base_dir):
     try:
         run_sync(usb_drive_base_dir, feeds, ledger, _sync_dependencies(support, usb_drive_base_dir))
     finally:
+        prune_local_archive(ledger, support)
         refresh_needs_copy(ledger, support / "needs_copy")
     update_last_run_timestamp(usb_drive_base_dir)
     print("Podcast episodes organized and downloaded. Big Day!")
@@ -595,6 +596,7 @@ def prepare_main(only_feed_id=None, force_slice=False):
         try:
             run_prepare(feeds, ledger, _prepare_dependencies(support))
         finally:
+            prune_local_archive(ledger, support)
             refresh_needs_copy(ledger, support / "needs_copy")
         if only_feed_id is None:
             print("Nightly prepare finished.")

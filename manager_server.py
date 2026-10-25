@@ -1,4 +1,6 @@
+import fcntl
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -9,11 +11,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from episode_ledger import EpisodeLedger, support_dir
+from episode_ledger import EpisodeLedger, prune_local_archive, support_dir
 from library import (
     LibraryError,
     StaleLibrary,
@@ -48,6 +50,7 @@ _EPISODE_CACHE = {}
 _EPISODE_LOCK = threading.Lock()
 _DRIVE_FILES_CACHE = {}
 _DRIVE_FILES_TTL = 2
+_HEADPHONE_LOCK = threading.Lock()
 
 
 class NewFolder(BaseModel):
@@ -142,6 +145,7 @@ def create_app(
     marker_paths=None,
     start_prepare=None,
     ledger_path=None,
+    archive_root=None,
     static_dir=None,
     serve_ui=True,
     load_episodes=None,
@@ -158,6 +162,7 @@ def create_app(
         ]
     marker_paths = [Path(path) for path in marker_paths]
     ledger_path = Path(ledger_path or (support_dir() / "ledger.json"))
+    archive_root = Path(archive_root) if archive_root is not None else ledger_path.parent
     web_root = None
     if serve_ui:
         web_root = Path(static_dir) if static_dir is not None else REPO / "web" / "dist"
@@ -362,12 +367,13 @@ def create_app(
         shows_by_name = {show["name"]: int(show["feed_id"]) for show in shows}
         folder_order = [folder["name"] for folder in library.get("folders") or []]
         volumes = []
-        for root in drive_roots:
-            if not root.is_dir():
-                continue
-            volumes.append(
-                _volume_listing(root, show_names, shows_by_name, ledger_path, load_episodes, folder_order)
-            )
+        with _HEADPHONE_LOCK:
+            for root in drive_roots:
+                if not root.is_dir():
+                    continue
+                volumes.append(
+                    _volume_listing(root, show_names, shows_by_name, ledger_path, load_episodes, folder_order)
+                )
         return {"volumes": volumes}
 
     @app.delete("/api/headphones")
@@ -386,7 +392,13 @@ def create_app(
             return JSONResponse({"error": "That file is already gone"}, status_code=404)
         if not target.is_file():
             return JSONResponse({"error": "That path is not a file"}, status_code=400)
-        target.unlink()
+        try:
+            with _HEADPHONE_LOCK:
+                _commit_unlink(target)
+                _DRIVE_FILES_CACHE.pop(str(root), None)
+        except OSError as error:
+            detail = error.strerror or str(error)
+            return JSONResponse({"error": f"Could not remove that file from {body.volume}: {detail}"}, status_code=409)
         return {"ok": True}
 
     @app.post("/api/shows/{feed_id}/prepare")
@@ -418,6 +430,26 @@ def create_app(
         process, log_path = start_prepare(int(feed_id), force_slice=True)
         jobs.begin(feed_id, process, log_path)
         return library_response()
+
+    @app.get("/api/archive")
+    def get_archive():
+        try:
+            library = load_library(shows_path)
+        except LibraryError as error:
+            return JSONResponse({"error": str(error)}, status_code=422)
+        names = [show["name"] for show in library["shows"]]
+        prune_local_archive(EpisodeLedger(ledger_path), archive_root)
+        return {"episodes": _archive_episodes(archive_root, names)}
+
+    @app.get("/api/archive/audio")
+    async def archive_audio(path: str):
+        try:
+            target = _archive_file(archive_root, path)
+        except ValueError as error:
+            return JSONResponse({"error": str(error)}, status_code=400)
+        if not target.is_file():
+            return JSONResponse({"error": "That episode is no longer on this Mac"}, status_code=404)
+        return FileResponse(target, media_type="audio/mpeg")
 
     if web_root is not None and web_root.is_dir():
         app.mount("/", StaticFiles(directory=str(web_root), html=True), name="web")
@@ -1048,6 +1080,92 @@ def _volume_root(drive_roots, volume):
         if root.name == volume or str(root) == volume:
             return root
     return None
+
+
+def _archive_episodes(root, show_names):
+    episodes = []
+    root = Path(root)
+    for kind in ("sliced", "trimmed"):
+        base = root / kind
+        if not base.is_dir():
+            continue
+        try:
+            folders = list(base.iterdir())
+        except OSError:
+            continue
+        for folder in folders:
+            if not folder.is_dir() or folder.name.startswith("."):
+                continue
+            try:
+                files = list(folder.iterdir())
+            except OSError:
+                continue
+            for path in files:
+                if not path.is_file() or path.name.startswith("._") or path.suffix.lower() != ".mp3":
+                    continue
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                title, show, _remainder = _readable_drive_file(path.name, show_names)
+                episodes.append({
+                    "folder": folder.name,
+                    "name": title,
+                    "show": show,
+                    "filename": path.name,
+                    "path": f"{kind}/{folder.name}/{path.name}",
+                    "mtime": mtime,
+                    "kind": kind,
+                })
+    episodes.sort(key=lambda item: item["mtime"], reverse=True)
+    return episodes
+
+
+def _archive_file(root, relative):
+    if not relative or Path(relative).is_absolute():
+        raise ValueError("Choose an episode on this Mac")
+    parts = Path(relative).parts
+    if len(parts) != 3 or parts[0] not in {"sliced", "trimmed"}:
+        raise ValueError("That episode is outside the local archive")
+    if any(part in {"", ".", ".."} or part.startswith(".") for part in parts):
+        raise ValueError("That episode is outside the local archive")
+    root = Path(root).resolve()
+    target = (root / relative).resolve()
+    if not target.is_relative_to(root) or target.suffix.lower() != ".mp3" or _on_headphones(target):
+        raise ValueError("That episode is outside the local archive")
+    return target
+
+
+def _on_headphones(path):
+    text = Path(path).as_posix()
+    return text == "/Volumes/SWIMBUDS" or text.startswith("/Volumes/SWIMBUDS/") or text == "/Volumes/OpenSwim" or text.startswith("/Volumes/OpenSwim/")
+
+
+def _commit_unlink(path):
+    parent = path.parent
+    path.unlink()
+    sidecar = parent / f"._{path.name}"
+    try:
+        if sidecar.is_file():
+            sidecar.unlink()
+    except OSError:
+        pass
+    try:
+        flags = os.O_RDONLY
+        if hasattr(os, "O_DIRECTORY"):
+            flags |= os.O_DIRECTORY
+        directory = os.open(parent, flags)
+    except OSError:
+        return
+    try:
+        if hasattr(fcntl, "F_FULLFSYNC"):
+            fcntl.fcntl(directory, fcntl.F_FULLFSYNC)
+        else:
+            os.fsync(directory)
+    except OSError:
+        pass
+    finally:
+        os.close(directory)
 
 
 def _file_on_volume(root, relative):
