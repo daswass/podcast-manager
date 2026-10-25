@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 from flask import Flask, abort, jsonify, render_template_string, send_from_directory
 
@@ -27,7 +28,7 @@ def _episode_catalog() -> list[dict[str, str]]:
                 "category": path.parent.name,
                 "name": path.stem,
                 "path": str(path.relative_to(ARCHIVE_DIR)),
-                "url": f"/audio/{path.parent.name}/{path.name}",
+                "url": f"/audio/{quote(path.parent.name)}/{quote(path.name)}",
                 "modified": stat.st_mtime,
             }
         )
