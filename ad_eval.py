@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ad_detect import classify_transcript, merge_spans
+from ad_detect import classify_transcript
 from ad_model import AD_MODEL, complete_ad_prompt
 from whisper_transcribe import WHISPER_MODEL, transcribe_episode
 
@@ -24,7 +24,29 @@ def _span(item):
 
 
 def normalize(spans):
-    return merge_spans([_span(span) for span in spans if _span(span)[1] > _span(span)[0]])
+    """Return the true union of valid spans, including touching spans.
+
+    Production's merge policy is intentionally independent from evaluation:
+    scoring must never double-count overlapping predictions or references.
+    """
+    ordered = sorted(
+        (_span(span) for span in spans if _span(span)[1] > _span(span)[0]),
+        key=lambda span: (span[0], span[1]),
+    )
+    merged = []
+    for start, end in ordered:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _valid_spans(spans):
+    return sorted(
+        (_span(span) for span in spans if _span(span)[1] > _span(span)[0]),
+        key=lambda span: (span[0], span[1]),
+    )
 
 
 def duration(spans):
@@ -40,31 +62,45 @@ def intersection_seconds(left, right):
 
 
 def _match_spans(predicted, reference):
-    """One-to-one maximum-overlap matching for boundary diagnostics."""
-    pairs = []
-    for pi, (ps, pe) in enumerate(predicted):
+    """Maximum-cardinality, then maximum-overlap one-to-one matching."""
+    from functools import lru_cache
+
+    @lru_cache(maxsize=None)
+    def assign(pi, used_references):
+        if pi == len(predicted):
+            return (0, 0.0, ())
+        best = assign(pi + 1, used_references)
+        ps, pe = predicted[pi]
         for ri, (rs, re) in enumerate(reference):
+            if used_references & (1 << ri):
+                continue
             overlap = max(0.0, min(pe, re) - max(ps, rs))
-            if overlap:
-                pairs.append((overlap, pi, ri))
-    matched = []
-    used_predicted, used_reference = set(), set()
-    for overlap, pi, ri in sorted(pairs, reverse=True):
-        if pi not in used_predicted and ri not in used_reference:
-            used_predicted.add(pi)
-            used_reference.add(ri)
-            matched.append((predicted[pi], reference[ri], overlap))
-    return matched
+            if not overlap:
+                continue
+            count, total, pairs = assign(pi + 1, used_references | (1 << ri))
+            candidate = (count + 1, total + overlap, ((pi, ri, overlap),) + pairs)
+            if (candidate[0], candidate[1]) > (best[0], best[1]) or (
+                (candidate[0], candidate[1]) == (best[0], best[1])
+                and candidate[2] < best[2]
+            ):
+                best = candidate
+        return best
+
+    return [
+        (predicted[pi], reference[ri], overlap)
+        for pi, ri, overlap in assign(0, 0)[2]
+    ]
 
 
 def score(predicted, reference, boundary_tolerance=5.0):
-    predicted, reference = normalize(predicted), normalize(reference)
+    individual_predicted, individual_reference = _valid_spans(predicted), _valid_spans(reference)
+    predicted, reference = normalize(individual_predicted), normalize(individual_reference)
     predicted_seconds, reference_seconds = duration(predicted), duration(reference)
     overlap = intersection_seconds(predicted, reference)
     precision = overlap / predicted_seconds if predicted_seconds else (1.0 if not reference_seconds else 0.0)
     recall = overlap / reference_seconds if reference_seconds else (1.0 if not predicted_seconds else 0.0)
     f1 = (2 * precision * recall / (precision + recall)) if precision + recall else 0.0
-    matches = _match_spans(predicted, reference)
+    matches = _match_spans(individual_predicted, individual_reference)
     boundaries = [
         {
             "predicted": {"start": ps, "end": pe},
@@ -86,7 +122,7 @@ def score(predicted, reference, boundary_tolerance=5.0):
         "recall": round(recall, 4),
         "f1": round(f1, 4),
         "matched_spans": len(matches),
-        "reference_spans_matched": round(len(matches) / len(reference), 4) if reference else 1.0,
+        "reference_spans_matched": round(len(matches) / len(individual_reference), 4) if individual_reference else 1.0,
         "boundary_tolerance_seconds": boundary_tolerance,
         "boundary_pairs": boundaries,
         "all_matched_boundaries_within_tolerance": bool(boundaries) and all(pair["both_edges_within_tolerance"] for pair in boundaries),
@@ -137,6 +173,39 @@ def evaluate_case(case, boundary_tolerance):
     return report
 
 
+def evaluate_production_pipeline(case, rendered_audio_path, boundary_tolerance):
+    """Run the exact production render path, not a detector-only approximation."""
+    info = case.get("pipeline_info")
+    if not isinstance(info, dict):
+        raise ValueError("Case needs pipeline_info from the real show/episode (including chapters when available)")
+    source = (case.get("episode") or {}).get("audio_path")
+    if not source:
+        raise ValueError("Case needs episode.audio_path")
+    # Keep the evaluator importable for pure scoring tests; the production
+    # renderer (and its audio dependencies) is loaded only for a real run.
+    from podcastsToShokz import render_sliced_episode
+
+    segments = transcribe_episode(source)
+    trace = {}
+    audio_seconds = render_sliced_episode(info, source, rendered_audio_path, segments, trace=trace)
+    if trace.get("phrase_fallback_used"):
+        detail = trace.get("model_failure") or "production ad model returned no usable result"
+        raise RuntimeError(f"Production ad-model evaluation failed: {detail}; phrase fallback was used")
+    report = score(trace["final_tightened_cut_spans"], case.get("reference_ads") or [], boundary_tolerance)
+    report.update({
+        "schema": SCHEMA,
+        "evaluation_mode": "production_render_sliced_episode",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "episode": case.get("episode") or {},
+        "production_models": {"whisper": WHISPER_MODEL, "ad_agent": AD_MODEL},
+        "transcript_segment_count": len(segments),
+        "audio_seconds": audio_seconds,
+        "pipeline_trace": trace,
+        "rendered_audio_path": str(Path(rendered_audio_path).resolve()),
+    })
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -149,6 +218,11 @@ def main():
     run.add_argument("case")
     run.add_argument("--output")
     run.add_argument("--boundary-tolerance", type=float, default=5.0)
+    pipeline = subcommands.add_parser("pipeline", help="Run the exact production render_sliced_episode path and score final cut spans")
+    pipeline.add_argument("case")
+    pipeline.add_argument("rendered_audio")
+    pipeline.add_argument("--output")
+    pipeline.add_argument("--boundary-tolerance", type=float, default=5.0)
     args = parser.parse_args()
     if args.command == "models":
         print(json.dumps({"whisper": WHISPER_MODEL, "ad_agent": AD_MODEL}, indent=2))
@@ -159,6 +233,13 @@ def main():
         print("Now add reviewed reference_ads spans before running the local Qwen evaluation.")
         return
     case = load_case(args.case)
+    if args.command == "pipeline":
+        report = evaluate_production_pipeline(case, args.rendered_audio, args.boundary_tolerance)
+        output = args.output or str(Path(args.case).with_suffix(".pipeline-report.json"))
+        save_json(output, report)
+        print(json.dumps(report, indent=2))
+        print(f"Report written to {output}")
+        return
     report = evaluate_case(case, args.boundary_tolerance)
     output = args.output or str(Path(args.case).with_suffix(".report.json"))
     save_json(output, report)

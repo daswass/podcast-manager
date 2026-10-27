@@ -132,3 +132,9 @@ The report includes time-weighted precision/recall/F1 plus every matched ad's
 start/end error and whether both edges are within the selected tolerance. Cases and
 reports are intentionally ignored under `eval/`: they contain private transcript text
 and local audio paths.
+
+For product-valid results, use `pipeline` rather than `run`. It calls the same
+`render_sliced_episode` function as Podcast Manager, including production STT,
+Qwen detection/refinement, publisher chapters, phrase fallback, audio-edge
+tightening, and final rendered MP3 output. The case's `pipeline_info` must be
+the real show configuration and episode chapters.
