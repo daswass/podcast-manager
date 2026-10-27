@@ -108,3 +108,33 @@ Clublife’s Podcast Index feed is Tiësto’s show, currently published under t
 ## Local player
 
 Open a show in the library to play the episodes kept for that show. The Player tab lists every episode under `sliced/` and `trimmed/` in `~/Library/Application Support/podcast-manager`. Copying to the headphones leaves those files in place.
+
+## Ad-removal evaluation harness
+
+`ad_eval.py` compares the production local ad agent against timestamps reviewed
+while listening to the original audio. It intentionally uses the exact laptop
+production models: `mlx-community/whisper-large-v3-turbo` for timestamped STT
+and `mlx-community/Qwen2.5-7B-Instruct-4bit` for ad boundaries.
+
+```bash
+# Confirms the exact models are the same as the production laptop pipeline.
+python ad_eval.py models
+
+# Generates timestamped STT using the production MLX Whisper model.
+python ad_eval.py init /path/to/episode.mp3 eval/my-episode.json --title "Episode title"
+
+# Edit eval/my-episode.json and add reviewed start/end spans to reference_ads.
+# Then score the production Qwen agent against that ground truth.
+python ad_eval.py run eval/my-episode.json --boundary-tolerance 5
+```
+
+The report includes time-weighted precision/recall/F1 plus every matched ad's
+start/end error and whether both edges are within the selected tolerance. Cases and
+reports are intentionally ignored under `eval/`: they contain private transcript text
+and local audio paths.
+
+For product-valid results, use `pipeline` rather than `run`. It calls the same
+`render_sliced_episode` function as Podcast Manager, including production STT,
+Qwen detection/refinement, publisher chapters, phrase fallback, audio-edge
+tightening, and final rendered MP3 output. The case's `pipeline_info` must be
+the real show configuration and episode chapters.

@@ -382,7 +382,8 @@ def load_episode_chapters(episode):
     return payload.get("chapters") or []
 
 
-def render_sliced_episode(info, source_path, dest_path, segments):
+def render_sliced_episode(info, source_path, dest_path, segments, trace=None):
+    """Render the production ad-cut path; ``trace`` is evaluation-only observability."""
     dest = Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
     audio = AudioSegment.from_mp3(source_path)
@@ -390,16 +391,31 @@ def render_sliced_episode(info, source_path, dest_path, segments):
     publisher = chapter_spans(info.get("chapters") or [], audio_seconds)
     phrase_spans = find_ad_spans(segments)
     model_spans = None
+    model_failure = None
     if segments:
         try:
             model_spans = classify_transcript(segments, audio_seconds, complete_ad_prompt)
         except Exception as error:
+            model_failure = f"{type(error).__name__}: {error}"
             print(f"\tAd model unavailable: {error}")
     if model_spans is None:
+        if model_failure is None:
+            model_failure = "model returned no usable spans"
         print("\tPhrase matches are the fallback")
     else:
         print(f"\tAd model marked {len(model_spans)} span(s)")
-    spans = tighten_spans(audio, choose_cut_spans(phrase_spans, model_spans, publisher))
+    selected_spans = choose_cut_spans(phrase_spans, model_spans, publisher)
+    spans = tighten_spans(audio, selected_spans)
+    if trace is not None:
+        trace.update({
+            "publisher_chapter_spans": publisher,
+            "phrase_spans": phrase_spans,
+            "model_spans": model_spans,
+            "model_failure": model_failure,
+            "phrase_fallback_used": model_spans is None,
+            "selected_spans_before_tightening": selected_spans,
+            "final_tightened_cut_spans": spans,
+        })
     if spans:
         # The fixed skip_first/skip_last values target the same pre-roll and
         # post-roll. Applying them after a detected cut would remove the show.
