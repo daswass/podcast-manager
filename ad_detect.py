@@ -24,7 +24,7 @@ _STRONG_SPONSOR_CUE = re.compile(
     re.IGNORECASE,
 )
 _COMMERCIAL_CTA = re.compile(
-    r"\b(?:[a-z0-9-]+\.(?:com|io|org)|dot com|slash [a-z0-9]|use code|promo code|"
+    r"\b(?:[a-z0-9-]+\.[a-z]{2,}|dot com|slash [a-z0-9]+|use code|promo code|"
     r"sign up|get started|special offer|\d+% off|save up to|free (?:trial|gift|bottle|sample)|"
     r"terms apply|member fdic|paid membership)\b",
     re.IGNORECASE,
@@ -56,7 +56,7 @@ _SPONSOR_AFTER_CUE = re.compile(
     re.IGNORECASE,
 )
 _DOMAIN_SPONSOR = re.compile(
-    r"\b([a-z][a-z0-9-]{2,})\s*(?:\.| dot )\s*(?:com|io|org)\b", re.IGNORECASE
+    r"\b([a-z][a-z0-9-]{2,})\s*(?:\.| dot )\s*[a-z]{2,}\b", re.IGNORECASE
 )
 
 
@@ -323,7 +323,11 @@ def classify_transcript(segments, duration, complete):
     # Explicit host-read introductions are deterministic discovery seeds. The
     # verifier still decides whether they are paid ads; this only prevents a
     # long discovery window from silently omitting an obvious sponsor read.
-    discovered = _strong_sponsor_candidates(segments) + _opening_block_candidates(segments)
+    discovered = (
+        _strong_sponsor_candidates(segments)
+        + _opening_block_candidates(segments)
+        + _post_ident_candidates(segments)
+    )
     for window in candidate_windows(segments):
         discovered.extend(parse_ad_candidates(complete(build_ad_prompt(window)), window))
     candidates = _merge_discovery_candidates(discovered)
@@ -340,7 +344,13 @@ def classify_transcript(segments, duration, complete):
             candidate,
         )
         if result is not None and not _verified_paid_has_commercial_grounding(context, candidate):
-            result = None
+            # A produced spot often names the product first and saves the URL
+            # for the disclaimer. Keep the spot when that URL is the same sponsor.
+            extended = _extend_verified_to_sponsor_cta(segments, result)
+            if extended is not None and _verified_paid_has_commercial_grounding(segments, extended):
+                result = extended
+            else:
+                result = None
         if result is None:
             result = _deterministic_paid_fallback(context, candidate)
         if result is not None:
@@ -351,7 +361,12 @@ def classify_transcript(segments, duration, complete):
     for candidate in verified:
         bounded.extend(
             _trim_after_commercial_close(
-                segments, _expand_explicit_sponsor_read(segments, candidate, span)
+                segments,
+                _cover_sponsor_pitch(
+                    segments,
+                    candidate,
+                    _expand_explicit_sponsor_read(segments, candidate, span),
+                ),
             )
             for span in _bound_candidate(segments, candidate, verified, complete)
         )
@@ -363,6 +378,178 @@ def classify_transcript(segments, duration, complete):
         )
         return None
     return merged
+
+
+_GENERIC_SPONSOR_WORDS = {
+    "brand", "brands", "capital", "company", "digital", "distribution", "financial",
+    "global", "group", "health", "insurance", "media", "network", "partners",
+    "services", "sleep", "target",
+}
+
+
+def _text_has_sponsor(text, sponsor):
+    norm = _norm(text)
+    key = _sponsor_key(sponsor)
+    if not key:
+        return False
+    if len(key) <= 4:
+        return re.search(rf"\b{re.escape(key)}\b", norm) is not None
+    compact = re.sub(r"[^a-z0-9]", "", norm)
+    if key in compact:
+        return True
+    words = [
+        word for word in re.findall(r"[a-z0-9]+", _norm(sponsor))
+        if len(word) >= 5 and word not in _GENERIC_SPONSOR_WORDS
+    ]
+    return any(re.search(rf"\b{re.escape(word)}\b", norm) for word in words)
+
+
+def _show_boundary(text):
+    return bool(re.search(
+        r"\b(?:you(?:'re| are) listening to|back to the interview|welcome back|"
+        r"this episode is recorded|let's get back|interview continues)\b",
+        _norm(text),
+    ))
+
+
+def _other_advertiser_cta(text, sponsor):
+    return bool(_COMMERCIAL_CTA.search(text)) and not _text_has_sponsor(text, sponsor)
+
+
+_PITCH_TAIL = re.compile(
+    r"\b(?:prospectus|distributor|safety information|terms apply|we sent you|"
+    r"discount|sponsoring this show|before you invest|member fdic)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_pitch_lead(text):
+    if _show_boundary(text) or _FALLBACK_EXCLUSION.search(text) or _NEW_SPONSOR.search(text):
+        return False
+    if re.search(r"\binterviews?\b", _norm(text)):
+        return False
+    return bool(re.search(r"\byou(?:'re|'ve|r| are| have)?\b|\byour\b", _norm(text)))
+
+
+def _segment_index(segments, start):
+    for index, segment in enumerate(segments):
+        if abs(float(segment["start"]) - float(start)) < 0.05:
+            return index
+    return None
+
+
+def _extend_verified_to_sponsor_cta(segments, candidate):
+    """Grow a product mention forward to that sponsor's own URL or offer."""
+    sponsor = candidate.get("sponsor") or ""
+    span_text = _candidate_span_text(segments, candidate["start"], candidate["end"])
+    if not sponsor or not _text_has_sponsor(span_text, sponsor):
+        return None
+    cursor = float(candidate["end"])
+    limit = cursor + 45
+    found = None
+    for segment in segments:
+        seg_start = float(segment["start"])
+        seg_end = float(segment["end"])
+        if seg_end <= cursor + 0.05:
+            continue
+        if seg_start - cursor >= 1.0 or seg_start > limit:
+            break
+        text = segment.get("text") or ""
+        if _show_boundary(text) or _NEW_SPONSOR.search(text) or _other_advertiser_cta(text, sponsor):
+            break
+        cursor = seg_end
+        if _COMMERCIAL_CTA.search(text) and _text_has_sponsor(text, sponsor):
+            found = cursor
+            break
+    if found is None:
+        return None
+    extended = dict(candidate)
+    extended["end"] = _pitch_tail_end(segments, found, sponsor)
+    return extended
+
+
+def _pitch_tail_end(segments, end, sponsor):
+    cursor = float(end)
+    for segment in segments:
+        seg_start = float(segment["start"])
+        seg_end = float(segment["end"])
+        if seg_end <= cursor + 0.05:
+            continue
+        if seg_start - cursor >= 1.0:
+            break
+        text = segment.get("text") or ""
+        if (
+            _show_boundary(text)
+            or _NEW_SPONSOR.search(text)
+            or _FALLBACK_EXCLUSION.search(text)
+            or _other_advertiser_cta(text, sponsor)
+        ):
+            break
+        if not (
+            _text_has_sponsor(text, sponsor)
+            or _COMMERCIAL_CTA.search(text)
+            or _PITCH_TAIL.search(text)
+        ):
+            break
+        cursor = seg_end
+    return cursor
+
+
+def _pitch_preamble_start(segments, brand_start, sponsor):
+    index = _segment_index(segments, brand_start)
+    if index is None:
+        return float(brand_start)
+    gap_start = None
+    cursor = index
+    while cursor > 0:
+        previous = segments[cursor - 1]
+        current = segments[cursor]
+        if float(brand_start) - float(previous["start"]) > 25:
+            break
+        if _other_advertiser_cta(previous.get("text") or "", sponsor) or _show_boundary(previous.get("text") or ""):
+            break
+        gap = float(current["start"]) - float(previous["end"])
+        if gap >= 1.0:
+            gap_start = float(current["start"])
+            break
+        cursor -= 1
+    if gap_start is not None:
+        return gap_start
+    start = float(brand_start)
+    cursor = index
+    while cursor > 0:
+        previous = segments[cursor - 1]
+        if float(brand_start) - float(previous["start"]) > 25:
+            break
+        gap = float(segments[cursor]["start"]) - float(previous["end"])
+        text = previous.get("text") or ""
+        if gap >= 1.0 or _other_advertiser_cta(text, sponsor) or not _is_pitch_lead(text):
+            break
+        start = float(previous["start"])
+        cursor -= 1
+    return start
+
+
+def _cover_sponsor_pitch(segments, candidate, span):
+    """A CTA-only mark still belongs to the host-read that leads into it."""
+    sponsor = candidate.get("sponsor") or ""
+    start, end = float(span[0]), float(span[1])
+    if not sponsor:
+        return (start, end)
+    earliest = None
+    for segment in segments:
+        seg_start = float(segment["start"])
+        if seg_start < start - 90 or seg_start >= end:
+            continue
+        if _text_has_sponsor(segment.get("text") or "", sponsor):
+            earliest = seg_start
+            break
+    if earliest is not None:
+        start = min(start, _pitch_preamble_start(segments, earliest, sponsor))
+    end = max(end, _pitch_tail_end(segments, end, sponsor))
+    if end <= start or end - start > MAX_MODEL_SPAN_SECONDS:
+        return (float(span[0]), float(span[1]))
+    return (start, end)
 
 
 def _strong_sponsor_candidates(segments):
@@ -407,6 +594,35 @@ def _opening_block_candidates(segments, min_gap=5, max_seconds=MAX_MODEL_SPAN_SE
     if len(quote) < _MIN_QUOTE_CHARS or not _OPENING_COMMERCIAL_CUE.search(block_text):
         return []
     return [{"start": start, "end": end, "quote": quote}]
+
+
+def _post_ident_candidates(segments, max_seconds=MAX_MODEL_SPAN_SECONDS):
+    """Seed the produced spot that starts after the show title sting."""
+    candidates = []
+    for index, segment in enumerate(segments):
+        if not re.search(r"\byou(?:'re| are) listening to\b", _norm(segment.get("text"))):
+            continue
+        rest = segments[index + 1:]
+        if not rest:
+            continue
+        if float(rest[0]["start"]) - float(segment["end"]) > 15:
+            continue
+        block = [rest[0]]
+        for later in rest[1:]:
+            gap = float(later["start"]) - float(block[-1]["end"])
+            if gap >= 1.0:
+                break
+            block.append(later)
+        start = float(block[0]["start"])
+        end = float(block[-1]["end"])
+        if end <= start or end - start > max_seconds:
+            continue
+        block_text = " ".join(_norm(item.get("text")) for item in block)
+        quote = _norm(block[0].get("text"))
+        if len(quote) < _MIN_QUOTE_CHARS or not _COMMERCIAL_CTA.search(block_text):
+            continue
+        candidates.append({"start": start, "end": end, "quote": quote})
+    return candidates
 
 
 def _candidate_context(segments, candidate, padding=15):

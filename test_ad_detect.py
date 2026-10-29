@@ -673,6 +673,95 @@ class SponsorAwareRegressionTest(unittest.TestCase):
         self.assertEqual(classify_transcript(segments, 200, complete), [(100, 140)])
 
 
+    def test_cta_only_marks_still_cover_the_sponsor_read(self):
+        segments = [
+            {"start": 50.7, "end": 53.5, "text": "You're listening to The Human Upgrade with Dave Asprey."},
+            {"start": 57.2, "end": 64.8, "text": "You've spent your career building a retirement nest egg."},
+            {"start": 64.8, "end": 78.2, "text": "Meet the Simplify Target 15 Distribution ETF, paid monthly."},
+            {"start": 78.2, "end": 88.6, "text": "Investing involves risk, including loss of principle. Carefully consider the fund before investing."},
+            {"start": 88.9, "end": 95.5, "text": "Visit simplify.us slash nest egg to learn more. Please read the prospectus carefully before you invest."},
+            {"start": 95.8, "end": 98.3, "text": "Distributor, Forsythe Financial Services, LLC."},
+            {"start": 99.5, "end": 107.4, "text": "You get home late. You're hungry."},
+            {"start": 107.6, "end": 134.0, "text": "ButcherBox delivers grass-fed beef to your door."},
+            {"start": 134.0, "end": 146.6, "text": "Go to butcherbox.com slash human upgrade for 20 dollars off your first box."},
+            {"start": 146.8, "end": 149.4, "text": "Be sure to use the link so they know we sent you and you get the discount."},
+            {"start": 150.0, "end": 156.0, "text": "This episode is recorded in the rainforests of the Amazon."},
+        ]
+
+        def complete(prompt):
+            if "candidate discovery" in prompt:
+                return _response([
+                    {"start": 64.8, "end": 78.2, "quote": "Meet the Simplify Target 15 Distribution ETF"},
+                    {"start": 134.0, "end": 146.6, "quote": "Go to butcherbox.com slash human upgrade"},
+                ])
+            if "Classify one candidate" in prompt:
+                if "simplify target" in prompt.lower():
+                    return self._paid("Simplify", "Meet the Simplify Target 15 Distribution ETF")
+                if "butcherbox.com" in prompt.lower():
+                    return self._paid("ButcherBox", "Go to butcherbox.com slash human upgrade")
+                return self._negative("editorial", "You're listening to The Human Upgrade")
+            if "start_line" in prompt:
+                if "paid advertiser is ButcherBox" in prompt:
+                    return self._line_response(prompt, "start_line", lambda line: "butcherbox.com" in line.lower())
+                return self._line_response(prompt, "start_line", lambda line: "simplify target" in line.lower())
+            if "end_line" in prompt:
+                if "paid advertiser is ButcherBox" in prompt:
+                    return self._line_response(prompt, "end_line", lambda line: "butcherbox.com" in line.lower(), last=True)
+                return self._line_response(prompt, "end_line", lambda line: "simplify.us" in line.lower(), last=True)
+            return "{}"
+
+        spans = classify_transcript(segments, 600, complete)
+        self.assertIsNotNone(spans)
+
+        def covers(second):
+            return any(start <= second < end for start, end in spans)
+
+        self.assertFalse(covers(52))
+        self.assertTrue(covers(60))
+        self.assertTrue(covers(92))
+        self.assertTrue(covers(104))
+        self.assertTrue(covers(140))
+        self.assertFalse(covers(152))
+
+    def test_midroll_problem_setup_is_cut_with_the_offer(self):
+        segments = [
+            {"start": 10, "end": 16, "text": "Where does peak span happen in that world?"},
+            {"start": 16, "end": 28, "text": "Your skin doesn't suddenly get old. Maybe your skin is drier."},
+            {"start": 28, "end": 40, "text": "The new Rich Cream by One Skin targets these changes."},
+            {"start": 40, "end": 48, "text": "For a limited time, try it with 15% off at oneskin.co slash dave."},
+            {"start": 48.2, "end": 55, "text": "The science is advancing so dramatically."},
+        ]
+
+        def complete(prompt):
+            if "candidate discovery" in prompt:
+                return _response([{
+                    "start": 40,
+                    "end": 48,
+                    "quote": "For a limited time, try it with 15% off at oneskin.co slash dave.",
+                }])
+            if "Classify one candidate" in prompt:
+                return self._paid(
+                    "One Skin",
+                    "For a limited time, try it with 15% off at oneskin.co slash dave.",
+                )
+            if "start_line" in prompt:
+                return self._line_response(prompt, "start_line", lambda line: "15% off" in line.lower())
+            if "end_line" in prompt:
+                return self._line_response(prompt, "end_line", lambda line: "15% off" in line.lower(), last=True)
+            return "{}"
+
+        spans = classify_transcript(segments, 300, complete)
+
+        def covers(second):
+            return any(start <= second < end for start, end in spans)
+
+        self.assertFalse(covers(12))
+        self.assertTrue(covers(20))
+        self.assertTrue(covers(32))
+        self.assertTrue(covers(44))
+        self.assertFalse(covers(50))
+
+
 class ChooseCutTest(unittest.TestCase):
     def test_model_spans_are_cut_without_a_phrase_match(self):
         self.assertEqual(choose_cut_spans([(5, 40), (200, 230)], [(100, 130)], []), [(100, 130)])

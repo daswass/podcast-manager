@@ -12,6 +12,13 @@ def sync_plan(entry):
 
 
 def prepare_plan(entry, info=None):
+    # An explicit ad cut reprocesses the latest episode even when a sliced
+    # file already exists. That file may have been written while the ad model
+    # was unavailable.
+    if info is not None and info.get("force_slice_latest"):
+        if entry and entry.get("downloaded") and entry.get("original_path"):
+            return "slice"
+        return "download_and_slice"
     # cut_ads false keeps the fixed trim and speed and skips transcription.
     if info is not None and info.get("slice") is False:
         if entry and entry.get("downloaded") and entry.get("original_path"):
@@ -41,9 +48,14 @@ def run_prepare(feeds, ledger, deps):
                 continue
             keep_ids.append(episode_id)
             episode_info = info
-            if index == 0 and info.get("force_slice_latest"):
+            if info.get("force_slice_latest"):
                 episode_info = dict(info)
-                episode_info.pop("slice", None)
+                if index == 0:
+                    # The newest episode is re-sliced even when the show
+                    # normally keeps ads.
+                    episode_info.pop("slice", None)
+                else:
+                    episode_info.pop("force_slice_latest", None)
             try:
                 _prepare_one(podcast_name, episode_info, episode, ledger, deps)
             except Exception as error:

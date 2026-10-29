@@ -35,6 +35,10 @@ class PlanTest(unittest.TestCase):
     def test_prepare_skips_a_finished_slice(self):
         self.assertEqual(prepare_plan({"sliced": True, "sliced_path": "/ready.mp3"}), "skip")
 
+    def test_forced_slice_reprocesses_an_existing_sliced_download(self):
+        entry = {"downloaded": True, "original_path": "/raw.mp3", "sliced": True, "sliced_path": "/ready.mp3"}
+        self.assertEqual(prepare_plan(entry, {"force_slice_latest": True}), "slice")
+
     def test_prepare_slices_an_existing_download(self):
         self.assertEqual(prepare_plan({"downloaded": True, "original_path": "/raw.mp3", "sliced": False}), "slice")
 
