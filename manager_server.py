@@ -378,9 +378,6 @@ def create_app(
 
     @app.delete("/api/headphones")
     def delete_headphone(body: DeleteHeadphoneFile):
-        reason = _live_marker_reason(marker_paths)
-        if reason:
-            return JSONResponse({"error": reason}, status_code=409)
         root = _volume_root(drive_roots, body.volume)
         if root is None or not root.is_dir():
             return JSONResponse({"error": f"{body.volume} is not connected"}, status_code=404)
@@ -592,8 +589,12 @@ def _job_flags(jobs, prepare_markers, drive_roots):
 
 def _live_marker_reason(marker_paths):
     for path in marker_paths:
-        if path.exists() and not running_marker_is_stale(str(path)):
-            return "Nightly prepare is already running"
+        if not path.exists() or running_marker_is_stale(str(path)):
+            continue
+        command = _marker_command(path)
+        if "podcastsToShokz.py" in command and "--prepare" not in command:
+            return "Headphones are being updated"
+        return "Nightly prepare is already running"
     return None
 
 

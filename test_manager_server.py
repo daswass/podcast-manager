@@ -99,6 +99,25 @@ class ManagerApiTests(unittest.TestCase):
         self.assertIn("Nightly prepare", response.json()["error"])
         self.assertEqual(self.started, [])
 
+    def test_headphone_delete_removes_the_file_while_a_copy_is_running(self):
+        episode = self.drive / "News" / "Up First.mp3"
+        episode.write_bytes(b"audio")
+        self.marker.write_text(f"started=now\npid={os.getpid()}\nepoch=1\n")
+        response = self.client.request(
+            "DELETE",
+            "/api/headphones",
+            json={"volume": "SWIMBUDS", "path": "News/Up First.mp3"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(episode.exists())
+
+    def test_headphone_copy_marker_says_the_headphones_are_updating(self):
+        self.marker.write_text(f"started=now\npid={os.getpid()}\nepoch=1\n")
+        with patch("manager_server._marker_command", return_value="python podcastsToShokz.py"):
+            body = self.client.get("/api/library").json()
+        self.assertEqual(body["prepare_reason"], "Headphones are being updated")
+        self.assertTrue(body["prepare_busy"])
+
     def _live_marker(self, path):
         path.write_text(f"started=now\npid={os.getpid()}\nepoch=1\n")
 
