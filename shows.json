@@ -60,8 +60,8 @@
       "name": "FT News Briefing",
       "feed_id": 73509,
       "folder": "Finance",
-      "skip_first": 30,
-      "skip_last": 90,
+      "skip_first": 28,
+      "skip_last": 0,
       "playback_speed": 1.4,
       "num_episodes": 1,
       "cut_ads": null
@@ -100,8 +100,8 @@
       "name": "WSJ Whats News",
       "feed_id": 491326,
       "folder": "News",
-      "skip_first": 20,
-      "skip_last": 10,
+      "skip_first": 0,
+      "skip_last": 0,
       "playback_speed": 1.4,
       "num_episodes": 1,
       "cut_ads": null

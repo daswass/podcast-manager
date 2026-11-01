@@ -2,6 +2,7 @@ import argparse
 import json
 import requests
 import os
+import tempfile
 import unicodedata
 from pathlib import Path
 from pydub import AudioSegment
@@ -12,12 +13,21 @@ import glob
 import re
 import pytz
 
-from ad_detect import chapter_spans, choose_cut_spans, classify_transcript, tighten_spans
+from ad_detect import (
+    chapter_spans,
+    choose_cut_spans,
+    classify_transcript,
+    cover_neighboring_spots,
+    edge_ad_seconds,
+    measure_trim,
+    tighten_spans,
+    with_show_trim,
+)
 from ad_model import complete_ad_prompt
 from ad_slices import cut_ads, find_ad_spans
 from episode_ledger import EpisodeLedger, prune_local_archive, refresh_needs_copy, support_dir
 from episode_pipeline import run_prepare, run_sync
-from library import LibraryError, feed_settings, load_library
+from library import LibraryError, feed_settings, load_library, save_library, update_show, version_of
 from whisper_transcribe import transcribe_episode
 
 import ssl
@@ -109,6 +119,7 @@ def update_last_run_timestamp(usb_drive_base_dir):
 
 RUNNING_MARKER_NAME = "podcast_downloader_running.txt"
 TMP_RUNNING_MARKER = "/tmp/podcast_downloader_running.txt"
+COPY_STATUS_NAME = "copying.txt"
 
 def running_marker_path(usb_drive_base_dir):
     return os.path.join(usb_drive_base_dir, RUNNING_MARKER_NAME)
@@ -157,6 +168,35 @@ def create_running_marker(usb_drive_base_dir):
 
     with open(TMP_RUNNING_MARKER, "w") as file:
         file.write(content)
+
+def copy_status_path(directory=None):
+    root = Path(directory) if directory else support_dir()
+    return root / COPY_STATUS_NAME
+
+
+def note_copy(show, title, directory=None):
+    path = copy_status_path(directory)
+    show = " ".join((show or "").split())
+    title = " ".join((title or "").split())
+    if not show:
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(f"{show}\n{title}\n")
+    temporary.replace(path)
+
+
+def read_copy_status(directory=None):
+    path = copy_status_path(directory)
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return None
+    if len(lines) < 2 or not lines[0].strip():
+        return None
+    return {"show": lines[0].strip(), "title": lines[1].strip()}
+
 
 def remove_running_marker(usb_drive_base_dir):
     for path in (running_marker_path(usb_drive_base_dir), TMP_RUNNING_MARKER):
@@ -406,6 +446,13 @@ def render_sliced_episode(info, source_path, dest_path, segments, trace=None):
         print(f"\tAd model marked {len(model_spans)} span(s)")
     selected_spans = choose_cut_spans(phrase_spans, model_spans, publisher)
     spans = tighten_spans(audio, selected_spans)
+    spans = cover_neighboring_spots(segments, spans)
+    spans = with_show_trim(
+        spans,
+        audio_seconds,
+        info.get("skip_first") or 0,
+        info.get("skip_last") or 0,
+    )
     if trace is not None:
         trace.update({
             "publisher_chapter_spans": publisher,
@@ -423,9 +470,9 @@ def render_sliced_episode(info, source_path, dest_path, segments, trace=None):
         cut_ads(audio, spans).export(str(dest), format="mp3")
         process_audio(info, str(dest), apply_trim=False)
     else:
-        print("\tNo ad spans found; using the fixed trim and speed")
+        print("\tNo ad spans found; using the saved speed")
         shutil.copy(source_path, dest)
-        process_audio(info, str(dest), apply_trim=True)
+        process_audio(info, str(dest), apply_trim=False)
     return audio_seconds
 
 
@@ -470,6 +517,7 @@ def _sync_dependencies(support, drive_root):
         "download": download_episode_file,
         "render_trimmed": render_trimmed_episode,
         "copy_file": copy_to_drive,
+        "note_copy": note_copy,
         "prune": delete_old_episodes,
         "original_path": lambda info, episode: original_episode_path(support, info, episode),
         "trimmed_path": lambda info, episode: trimmed_episode_path(support, info["podcast_name"], info, episode),
@@ -545,6 +593,7 @@ def _run_podcast_update(usb_drive_base_dir):
         print("Error: USB drive not mounted. Please connect the USB drive and try again.")
         return
 
+    note_copy(None, None)
     feeds = load_podcast_feeds()
     support = support_dir()
     ledger = EpisodeLedger(support / "ledger.json")
@@ -576,11 +625,79 @@ def copy_prepared_show(feeds, ledger, support):
         return
     info = feeds[0][1]
     kept = info.get("force_latest") or info.get("num_episodes", 1)
+    note_copy(None, None)
     print(f"Copying {name} to {drive} and keeping {kept}.")
     try:
         run_sync(drive, feeds, ledger, _sync_dependencies(support, drive))
     finally:
         refresh_needs_copy(ledger, support / "needs_copy")
+
+
+def _latest_episodes(feed_id, count):
+    feed = retry_api_call(index.episodesByFeedId, int(feed_id), max_results=max(count, 1))
+    return ((feed or {}).get("items") or [])[:count]
+
+
+def _measure_episode(episode, directory):
+    dest = Path(directory) / f"{episode.get('id') or 'episode'}.mp3"
+    download_episode_file(episode.get("enclosureUrl"), dest)
+    segments = transcribe_episode(dest)
+    duration = len(AudioSegment.from_mp3(dest)) / 1000
+    spans = classify_transcript(segments, duration, complete_ad_prompt)
+    if spans is None:
+        return {
+            "title": episode.get("title") or "episode",
+            "duration": duration,
+            "spans": None,
+            "lead": 0,
+            "tail": 0,
+        }
+    lead, tail = edge_ad_seconds(spans, duration)
+    return {
+        "title": episode.get("title") or "episode",
+        "duration": duration,
+        "spans": spans,
+        "lead": lead,
+        "tail": tail,
+    }
+
+
+def calibrate_show_trim(feed_id, shows_path=None, sample_count=3, fetch_episodes=None, prepare_episode=None):
+    """Measure the shared opening and closing ads and save them on the show."""
+    path = Path(shows_path) if shows_path else SHOWS_PATH
+    library = load_library(path)
+    show = next(item for item in library["shows"] if int(item["feed_id"]) == int(feed_id))
+    fetch_episodes = fetch_episodes or _latest_episodes
+    episodes = list(fetch_episodes(int(feed_id), sample_count) or [])[:sample_count]
+    if len(episodes) < 2:
+        print(f"ERROR: Need at least two episodes of {show['name']} to measure a trim")
+        raise SystemExit(1)
+    measured = []
+    if prepare_episode is None:
+        with tempfile.TemporaryDirectory() as tmp:
+            for episode in episodes:
+                try:
+                    measured.append(_measure_episode(episode, tmp))
+                except Exception as error:
+                    print(f"\tSkipping '{episode.get('title') or 'episode'}': {error}")
+    else:
+        for episode in episodes:
+            measured.append(prepare_episode(episode))
+    usable = []
+    for episode in measured:
+        if episode.get("spans") is None:
+            print(f"\tSkipping '{episode.get('title') or 'episode'}': the ad pass was discarded")
+            continue
+        usable.append(episode)
+    if len(usable) < 2:
+        print(f"ERROR: Could not measure two episodes of {show['name']}")
+        raise SystemExit(1)
+    trim = measure_trim(usable)
+    library = load_library(path)
+    version = version_of(path.read_bytes())
+    update_show(library, int(feed_id), skip_first=trim["skip_first"], skip_last=trim["skip_last"])
+    save_library(path, library, version)
+    return {"show": show["name"], "episodes": usable, **trim}
 
 
 def prepare_main(only_feed_id=None, force_slice=False):
@@ -650,11 +767,34 @@ if __name__ == "__main__":
         action="store_true",
         help="With --prepare-show, remove ads from the latest episode even when the show leaves them in",
     )
+    parser.add_argument(
+        "--calibrate-trim",
+        metavar="FEED_ID",
+        help="Measure the shared opening and closing ads for one show and save that trim",
+    )
     args = parser.parse_args()
+    if args.calibrate_trim and (args.prepare or args.prepare_show or args.cut_ads):
+        parser.error("--calibrate-trim is used on its own")
     if args.prepare and args.prepare_show:
         parser.error("Choose either --prepare or --prepare-show")
     if args.cut_ads and not args.prepare_show:
         parser.error("--cut-ads is only used with --prepare-show")
+    if args.calibrate_trim:
+        support = support_dir()
+        if not acquire_running_marker(str(support)):
+            print("ERROR: Trim measurement is already running")
+            raise SystemExit(1)
+        try:
+            result = calibrate_show_trim(args.calibrate_trim)
+        finally:
+            remove_running_marker(str(support))
+        print(f"{result['show']}: skip_first={result['skip_first']}s skip_last={result['skip_last']}s")
+        for episode in result["episodes"]:
+            print(
+                f"\t{episode['title']}: opening {episode.get('lead', 0):.0f}s, "
+                f"closing {episode.get('tail', 0):.0f}s"
+            )
+        raise SystemExit(0)
     if args.prepare_show:
         prepare_main(only_feed_id=args.prepare_show, force_slice=args.cut_ads)
         raise SystemExit(0)

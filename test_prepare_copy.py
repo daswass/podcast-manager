@@ -1,3 +1,5 @@
+import json
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -33,8 +35,10 @@ class CopyPreparedShowTest(unittest.TestCase):
             patch("podcastsToShokz.run_sync") as sync,
             patch("podcastsToShokz.refresh_needs_copy") as refresh,
             patch("podcastsToShokz._sync_dependencies", return_value={"prune": object()}) as deps,
+            patch("podcastsToShokz.note_copy") as note,
         ):
             podcastsToShokz.copy_prepared_show(FEED, ledger, support)
+        note.assert_called_once_with(None, None)
         sync.assert_called_once_with("/Volumes/SWIMBUDS/", FEED, ledger, deps.return_value)
         deps.assert_called_once_with(support, "/Volumes/SWIMBUDS/")
         refresh.assert_called_once_with(ledger, support / "needs_copy")
@@ -56,6 +60,27 @@ class CopyPreparedShowTest(unittest.TestCase):
         ):
             podcastsToShokz.copy_prepared_show(FEED, object(), Path("/tmp/podcast-manager-support"))
         sync.assert_not_called()
+
+
+class CopyStatusTest(unittest.TestCase):
+    def test_note_copy_records_the_episode_and_clears_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            podcastsToShokz.note_copy("Up First", "Morning edition", tmp)
+            status_file = Path(tmp) / "copying.txt"
+            self.assertTrue(status_file.is_file())
+            self.assertEqual(
+                podcastsToShokz.read_copy_status(tmp),
+                {"show": "Up First", "title": "Morning edition"},
+            )
+            podcastsToShokz.note_copy("Up First", "Line one\nLine two", tmp)
+            self.assertEqual(podcastsToShokz.read_copy_status(tmp)["title"], "Line one Line two")
+            podcastsToShokz.note_copy(None, None, tmp)
+            self.assertIsNone(podcastsToShokz.read_copy_status(tmp))
+            self.assertFalse(status_file.exists())
+
+    def test_missing_status_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(podcastsToShokz.read_copy_status(tmp))
 
 
 class PrepareMainCopyTest(unittest.TestCase):
@@ -100,6 +125,49 @@ class PrepareMainCopyTest(unittest.TestCase):
         self.assertTrue(info["force_slice_latest"])
         self.assertFalse(info["slice"])
         copy.assert_called_once()
+
+
+class CalibrateTrimTest(unittest.TestCase):
+    def test_calibrate_saves_the_shortest_shared_trim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "shows.json"
+            path.write_text(json.dumps({
+                "folders": [{"name": "News", "cut_ads": True}],
+                "shows": [{
+                    "name": "Up First",
+                    "feed_id": 5,
+                    "folder": "News",
+                    "skip_first": 0,
+                    "skip_last": 0,
+                    "playback_speed": 1.0,
+                    "num_episodes": 1,
+                    "cut_ads": None,
+                }],
+            }))
+
+            def fetch(feed_id, count):
+                return [{"id": 1}, {"id": 2}, {"id": 3}]
+
+            def prepare(episode):
+                samples = {
+                    1: (100, [(0, 30), (80, 100)]),
+                    2: (200, [(0, 20), (170, 200)]),
+                    3: (150, [(0, 25), (140, 150)]),
+                }
+                duration, spans = samples[episode["id"]]
+                return {"title": str(episode["id"]), "duration": duration, "spans": spans}
+
+            result = podcastsToShokz.calibrate_show_trim(
+                5,
+                shows_path=path,
+                fetch_episodes=fetch,
+                prepare_episode=prepare,
+            )
+            saved = json.loads(path.read_text())["shows"][0]
+        self.assertEqual(result["skip_first"], 20)
+        self.assertEqual(result["skip_last"], 10)
+        self.assertEqual(saved["skip_first"], 20)
+        self.assertEqual(saved["skip_last"], 10)
 
 
 if __name__ == "__main__":

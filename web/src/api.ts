@@ -1,4 +1,4 @@
-export type ShowStatus = "preparing" | "sliced" | "trimmed" | "not_prepared";
+export type ShowStatus = "preparing" | "measuring" | "sliced" | "trimmed" | "not_prepared";
 
 export type Folder = {
   name: string;
@@ -24,7 +24,12 @@ export type Show = {
   on_headphones: boolean | null;
 };
 
-export type JobActivity = "downloading" | "copying" | "both" | "running" | null;
+export type JobActivity = "downloading" | "measuring" | "copying" | "both" | "running" | null;
+
+export type CopyTarget = {
+  show: string;
+  title: string;
+};
 
 export type Library = {
   version: string;
@@ -34,6 +39,7 @@ export type Library = {
   prepare_reason: string | null;
   headphone_volume: string | null;
   job: JobActivity;
+  copying: CopyTarget | null;
 };
 
 export type SearchHit = {
@@ -204,4 +210,8 @@ export function prepareShow(feedId: number): Promise<Library> {
 
 export function cutShowAds(feedId: number): Promise<Library> {
   return request<Library>(`/api/shows/${feedId}/cut-ads`, { method: "POST" });
+}
+
+export function measureShowTrim(feedId: number): Promise<Library> {
+  return request<Library>(`/api/shows/${feedId}/calibrate-trim`, { method: "POST" });
 }

@@ -83,6 +83,13 @@ button { cursor: pointer; }
   background: rgba(215, 236, 207, 0.08);
 }
 
+.activity-target {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .activity::before {
   content: "";
   width: 7px;
@@ -362,7 +369,7 @@ button.status {
 }
 button.status:disabled { cursor: default; opacity: 0.55; }
 button.status.trimmed:hover:not(:disabled) { border-color: #e7b1a4; }
-.status.preparing { color: #e6a15c; border-color: #e6a15c; }
+.status.preparing, .status.measuring { color: #e6a15c; border-color: #e6a15c; }
 .status.not_prepared { color: #9c988c; }
 .status.headphones {
   display: inline-flex;
@@ -443,6 +450,7 @@ button.trash svg { width: 16px; height: 16px; display: block; }
 .danger-text { color: #d4654f; }
 
 .quiet:disabled { opacity: 0.35; cursor: default; }
+.measure-trim { margin-left: 4px; }
 
 .empty, .empty-row { color: #9c988c; margin: 8px 0; }
 

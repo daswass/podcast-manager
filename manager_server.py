@@ -39,6 +39,7 @@ from podcastsToShokz import (
     index,
     running_marker_is_stale,
     episode_filename,
+    read_copy_status,
     safe_episode_title,
 )
 
@@ -102,6 +103,7 @@ class PrepareJobs:
         self.feed_id = None
         self.process = None
         self.log_path = None
+        self.kind = "prepare"
         self.errors = {}
 
     def running_feed(self):
@@ -110,11 +112,12 @@ class PrepareJobs:
             return None
         return self.feed_id
 
-    def begin(self, feed_id, process, log_path):
+    def begin(self, feed_id, process, log_path, kind="prepare"):
         self.errors.pop(int(feed_id), None)
         self.feed_id = int(feed_id)
         self.process = process
         self.log_path = log_path
+        self.kind = kind
 
     def error_for(self, feed_id):
         self._reap()
@@ -137,6 +140,7 @@ class PrepareJobs:
         self.process = None
         self.feed_id = None
         self.log_path = None
+        self.kind = "prepare"
 
 
 def create_app(
@@ -144,6 +148,7 @@ def create_app(
     drive_roots=None,
     marker_paths=None,
     start_prepare=None,
+    start_calibrate=None,
     ledger_path=None,
     archive_root=None,
     static_dir=None,
@@ -168,6 +173,8 @@ def create_app(
         web_root = Path(static_dir) if static_dir is not None else REPO / "web" / "dist"
     if start_prepare is None:
         start_prepare = _start_prepare_process
+    if start_calibrate is None:
+        start_calibrate = _start_calibrate_process
     if load_episodes is None:
         load_episodes = _load_feed_episodes
     if load_feed is None:
@@ -192,7 +199,7 @@ def create_app(
         for show in library["shows"]:
             feed_id = int(show["feed_id"])
             if running == feed_id:
-                status = "preparing"
+                status = "measuring" if jobs.kind == "measure" else "preparing"
                 error = None
             else:
                 status = _ledger_status(episodes, feed_id)
@@ -220,6 +227,7 @@ def create_app(
                 "posted": _latest_posted(feed_id, episodes, load_episodes),
                 "on_headphones": on_headphones,
             })
+        job = _job_flags(jobs, marker_paths, drive_roots)
         return {
             "version": version_of(shows_path.read_bytes()),
             "folders": library["folders"],
@@ -227,7 +235,8 @@ def create_app(
             "prepare_busy": reason is not None,
             "prepare_reason": reason,
             "headphone_volume": headphone.name if headphone is not None else None,
-            "job": _job_flags(jobs, marker_paths, drive_roots),
+            "job": job,
+            "copying": read_copy_status() if job in ("copying", "both") else None,
         }
 
     def library_response():
@@ -428,6 +437,21 @@ def create_app(
         jobs.begin(feed_id, process, log_path)
         return library_response()
 
+    @app.post("/api/shows/{feed_id}/calibrate-trim")
+    def calibrate_trim(feed_id: int):
+        try:
+            library = load_library(shows_path)
+        except LibraryError as error:
+            return JSONResponse({"error": str(error)}, status_code=422)
+        if not any(int(show["feed_id"]) == int(feed_id) for show in library["shows"]):
+            return JSONResponse({"error": f"Unknown show {feed_id}"}, status_code=404)
+        reason = _prepare_block_reason(jobs, marker_paths)
+        if reason:
+            return JSONResponse({"error": reason}, status_code=409)
+        process, log_path = start_calibrate(int(feed_id))
+        jobs.begin(feed_id, process, log_path, kind="measure")
+        return library_response()
+
     @app.get("/api/archive")
     def get_archive():
         try:
@@ -451,6 +475,19 @@ def create_app(
     if web_root is not None and web_root.is_dir():
         app.mount("/", StaticFiles(directory=str(web_root), html=True), name="web")
     return app
+
+
+def _start_calibrate_process(feed_id):
+    log_path = Path(f"/tmp/podcast-calibrate-{feed_id}.log")
+    command = [sys.executable, str(REPO / "podcastsToShokz.py"), "--calibrate-trim", str(feed_id)]
+    with log_path.open("w") as handle:
+        process = subprocess.Popen(
+            command,
+            cwd=str(REPO),
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+        )
+    return process, log_path
 
 
 def _start_prepare_process(feed_id, force_slice=False):
@@ -528,18 +565,22 @@ def _marker_job(path, drive_roots):
     drive_markers = {str(Path(root) / RUNNING_MARKER_NAME) for root in drive_roots}
     if str(path) in drive_markers:
         return "copying"
+    command = _marker_command(path)
+    if "--calibrate-trim" in command:
+        return "measuring"
+    if "--prepare" in command:
+        return "downloading"
+    if "podcastsToShokz.py" in command:
+        return "copying"
     if path == Path(TMP_RUNNING_MARKER):
-        command = _marker_command(path)
-        if "--prepare" in command:
-            return "downloading"
-        if "podcastsToShokz.py" in command:
-            return "copying"
         return "running"
     return "downloading"
 
 
 def _job_flags(jobs, prepare_markers, drive_roots):
-    downloading = jobs.running_feed() is not None
+    running = jobs.running_feed() is not None
+    measuring = running and getattr(jobs, "kind", "prepare") == "measure"
+    downloading = running and not measuring
     copying = False
     ambiguous = False
     seen = set()
@@ -563,19 +604,20 @@ def _job_flags(jobs, prepare_markers, drive_roots):
         if str(path) in drive_markers:
             copying = True
             continue
-        if path == Path(TMP_RUNNING_MARKER):
-            kind = _marker_job(path, drive_roots)
-            if kind == "downloading":
-                downloading = True
-            elif kind == "copying":
-                copying = True
-            else:
-                ambiguous = True
-            continue
         pid = _marker_pid(path)
         if pid is not None and pid in copy_pids:
             continue
-        downloading = True
+        kind = _marker_job(path, drive_roots)
+        if kind == "measuring":
+            measuring = True
+        elif kind == "downloading":
+            downloading = True
+        elif kind == "copying":
+            copying = True
+        else:
+            ambiguous = True
+    if measuring and not downloading and not copying:
+        return "measuring"
     if downloading and copying:
         return "both"
     if downloading:
@@ -592,6 +634,8 @@ def _live_marker_reason(marker_paths):
         if not path.exists() or running_marker_is_stale(str(path)):
             continue
         command = _marker_command(path)
+        if "--calibrate-trim" in command:
+            return "Trim measurement is already running"
         if "podcastsToShokz.py" in command and "--prepare" not in command:
             return "Headphones are being updated"
         return "Nightly prepare is already running"

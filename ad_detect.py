@@ -50,6 +50,31 @@ _OBVIOUS_HOUSE_PROMO = re.compile(
     r"would like to advertise on|subject line advertising|send your question as a voice note)\b",
     re.IGNORECASE,
 )
+_NEIGHBOR_CUE = re.compile(
+    r"\b(?:this message comes from|this (?:podcast|episode) is supported by|"
+    r"brought to you by|stay tuned for the following|use (?:the )?code|promo code|"
+    r"learn more at|[a-z0-9-]+\.[a-z]{2,}|dot com|slash [a-z0-9]+)\b",
+    re.IGNORECASE,
+)
+_OFFER_CUE = re.compile(
+    r"\b(?:use (?:the )?code|promo code|\d+% off|free gifts?)\b",
+    re.IGNORECASE,
+)
+_SHOW_RETURN = re.compile(
+    r"\b(?:welcome back|and we(?:'|’)re back|back to the (?:show|interview|episode)|"
+    r"let(?:'|’)s get back|let(?:'|’)s do this|on to the interview|nice to (?:talk|speak)|"
+    r"thanks? you for (?:speaking|talking|joining)|"
+    r"thanks for (?:speaking|talking|joining)|show notes)\b",
+    re.IGNORECASE,
+)
+_COMMON_BRAND_WORDS = {
+    "about", "across", "after", "again", "always", "another", "around", "because",
+    "before", "being", "better", "could", "every", "first", "going", "helping",
+    "investors", "little", "location", "markets", "never", "nothing", "other",
+    "people", "private", "public", "really", "right", "should", "something",
+    "still", "their", "there", "these", "thing", "things", "those", "through",
+    "where", "while", "would",
+}
 _SPONSOR_AFTER_CUE = re.compile(
     r"(?:acknowledge (?:one of )?our sponsors?|brought to (?:us|you)(?: in part)? by|this (?:episode|podcast) is sponsored by)"
     r"[, :]*([A-Za-z0-9][A-Za-z0-9 .&'-]{0,50})",
@@ -327,6 +352,8 @@ def classify_transcript(segments, duration, complete):
         _strong_sponsor_candidates(segments)
         + _opening_block_candidates(segments)
         + _post_ident_candidates(segments)
+        + _code_url_candidates(segments)
+        + _branded_preroll_candidates(segments)
     )
     for window in candidate_windows(segments):
         discovered.extend(parse_ad_candidates(complete(build_ad_prompt(window)), window))
@@ -370,7 +397,9 @@ def classify_transcript(segments, duration, complete):
             )
             for span in _bound_candidate(segments, candidate, verified, complete)
         )
-    merged = merge_spans(bounded)
+    merged = cover_neighboring_spots(segments, merge_spans(bounded))
+    merged = [_finish_break(segments, span) for span in merged]
+    merged = merge_spans(merged)
     covered = sum(end - start for start, end in merged)
     if duration > 0 and covered > duration * MAX_AD_FRACTION:
         print(
@@ -640,9 +669,11 @@ def _deterministic_paid_fallback(context, candidate):
     commercial = _COMMERCIAL_CTA.search(candidate_text) and (
         _COMMERCIAL_PITCH.search(candidate_text) or _repeated_brand_token(candidate_text)
     )
-    if _FALLBACK_EXCLUSION.search(candidate_text) or not (explicit or commercial):
+    branded = bool(candidate.get("branded_preroll") and candidate.get("sponsor"))
+    offered = bool(candidate.get("offer_read") and (_OFFER_CUE.search(candidate_text) or _COMMERCIAL_CTA.search(candidate_text)))
+    if _FALLBACK_EXCLUSION.search(candidate_text) or not (explicit or commercial or branded or offered):
         return None
-    sponsor = _fallback_sponsor(candidate_text, candidate_text)
+    sponsor = candidate.get("sponsor") or _fallback_sponsor(candidate_text, candidate_text)
     if not sponsor:
         return None
     evidence = _norm(explicit.group(0) if explicit else candidate["quote"])
@@ -663,6 +694,62 @@ def _verified_paid_has_commercial_grounding(context, candidate):
         re.search(r"\b(?:paid )?sponsors?(?:ed|hip)?\b|\bbrought to (?:us|you)(?: in part)? by\b", candidate_text)
         or _COMMERCIAL_CTA.search(candidate_text)
     )
+
+
+def _show_prefix(segments):
+    """True when this stretch has no sponsor offer in it."""
+    text = " ".join(segment.get("text") or "" for segment in segments)
+    if _OFFER_CUE.search(text) or _is_closing_line(text) or _STRONG_SPONSOR_CUE.search(text):
+        return False
+    if re.search(
+        r"\b(?:this message comes from|brought to you by|stay tuned for the following)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+    return _tagline_brand(segments, period=True) is None
+
+
+def _finish_break(segments, span, pause=8):
+    """Drop a show tease before a long pause, and the news that follows an offer."""
+    covered = [
+        segment for segment in segments
+        if float(segment["end"]) > span[0] and float(segment["start"]) < span[1]
+    ]
+    if not covered:
+        return span
+    start = float(span[0])
+    prefix = []
+    for previous, nxt in zip(covered, covered[1:]):
+        prefix.append(previous)
+        if float(nxt["start"]) - float(previous["end"]) > pause and _show_prefix(prefix):
+            start = float(nxt["start"])
+            prefix = []
+    kept = []
+    for segment in covered:
+        if float(segment["start"]) < start - 0.05:
+            continue
+        if _SHOW_RETURN.search(segment.get("text") or ""):
+            break
+        kept.append(segment)
+    if not kept:
+        return span
+    end = float(kept[-1]["end"])
+    last_close = None
+    for index, segment in enumerate(kept):
+        if _is_closing_line(segment.get("text")):
+            last_close = index
+    if last_close is not None:
+        brand = _tagline_brand(kept, period=True)
+        extend = last_close
+        for index in range(last_close + 1, len(kept)):
+            if brand and brand in _norm(kept[index].get("text")):
+                extend = index
+        end = float(kept[extend]["end"])
+    end = min(float(span[1]), end)
+    if end <= start:
+        return span
+    return (start, end)
 
 
 def _trim_after_commercial_close(segments, span):
@@ -757,6 +844,226 @@ def _merge_verified_candidates(candidates):
             continue
         merged.append(dict(candidate))
     return merged
+
+
+def _code_url_candidates(segments):
+    """Seed a host-read that offers a code or a discount, which the model often skips."""
+    candidates = []
+    for index, segment in enumerate(segments):
+        text = segment.get("text") or ""
+        if not _OFFER_CUE.search(text):
+            continue
+        block = _contiguous_block(segments, index, max_seconds=90)
+        if not block:
+            continue
+        candidates.append({
+            "start": float(block[0]["start"]),
+            "end": float(block[-1]["end"]),
+            "quote": _norm(text),
+            "offer_read": True,
+        })
+    return candidates
+
+
+def _branded_preroll_candidates(segments):
+    """Seed a short opening spot that signs off with a brand heard earlier in the spot."""
+    if not segments or float(segments[0]["start"]) > 1:
+        return []
+    block = [segments[0]]
+    for segment in segments[1:]:
+        gap = float(segment["start"]) - float(block[-1]["end"])
+        if gap >= 2.0 or float(segment["end"]) - float(block[0]["start"]) > 45:
+            break
+        block.append(segment)
+    if len(block) == len(segments):
+        return []
+    brand = _tagline_brand(block)
+    if not brand:
+        return []
+    return [{
+        "start": float(block[0]["start"]),
+        "end": float(block[-1]["end"]),
+        "quote": _norm(block[0].get("text")),
+        "sponsor": brand,
+        "branded_preroll": True,
+    }]
+
+
+def _contiguous_block(segments, index, max_seconds):
+    origin = float(segments[index]["start"])
+    block = [segments[index]]
+    cursor = index
+    while cursor > 0:
+        previous = segments[cursor - 1]
+        if origin - float(previous["start"]) > max_seconds:
+            break
+        if float(segments[cursor]["start"]) - float(previous["end"]) > 1.5:
+            break
+        if _stop_break(previous.get("text") or "") or _norm(previous.get("text")).endswith("?"):
+            break
+        block.insert(0, previous)
+        cursor -= 1
+    cursor = index
+    while cursor + 1 < len(segments):
+        nxt = segments[cursor + 1]
+        if float(nxt["end"]) - origin > max_seconds:
+            break
+        if float(nxt["start"]) - float(segments[cursor]["end"]) > 1.5:
+            break
+        text = nxt.get("text") or ""
+        if _stop_break(text) or not _ad_line(text):
+            break
+        block.append(nxt)
+        cursor += 1
+    return block
+
+
+def _ad_line(text):
+    return bool(_OFFER_CUE.search(text) or _NEIGHBOR_CUE.search(text) or _COMMERCIAL_CTA.search(text))
+
+
+def _tagline_brand(segments, signoff_segments=None, period=False):
+    """A brand sign-off: a capitalized word that opens a short line and was already said."""
+    counts = {}
+    for segment in segments:
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9]{5,}", segment.get("text") or ""):
+            key = token.lower()
+            if key not in _COMMON_BRAND_WORDS:
+                counts[key] = counts.get(key, 0) + 1
+    signoffs = []
+    for segment in signoff_segments if signoff_segments is not None else segments:
+        raw = segment.get("text") or ""
+        keys = []
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9]{5,}", raw):
+            key = token.lower()
+            if key not in _COMMON_BRAND_WORDS:
+                keys.append((key, token[:1].isupper()))
+        if not (len(_norm(raw)) <= 60 and keys and keys[0][1]):
+            continue
+        if period:
+            stripped = raw.strip()
+            token = re.match(r"[A-Za-z][A-Za-z0-9]{5,}", stripped)
+            if token is None or stripped[token.end():token.end() + 1] not in ".!":
+                continue
+        signoffs.append(keys[0][0])
+    for key in signoffs:
+        if counts.get(key, 0) >= 2:
+            return key
+    return None
+
+
+def _stop_break(text):
+    return bool(_FALLBACK_EXCLUSION.search(text) or _SHOW_RETURN.search(text))
+
+
+def cover_neighboring_spots(segments, spans, max_gap=2.2, max_reach=90):
+    """Extend a verified spot across the other spots in the same break."""
+    covered = []
+    for start, end in spans or []:
+        covered.append(_cover_one_break(segments, float(start), float(end), max_gap, max_reach))
+    return merge_spans(covered)
+
+
+def _cover_one_break(segments, start, end, max_gap, max_reach):
+    changed = True
+    while changed:
+        changed = False
+        origin = [
+            segment for segment in segments
+            if float(segment["end"]) > start and float(segment["start"]) < end
+        ]
+        forward = _break_chain(segments, end, max_gap, max_reach, start, 1, origin)
+        if forward > end + 0.05:
+            end = forward
+            changed = True
+        backward = _break_chain(segments, start, max_gap, max_reach, end, -1, origin)
+        if backward < start - 0.05:
+            start = backward
+            changed = True
+    return (start, end)
+
+
+def _break_chain(segments, edge, max_gap, max_reach, origin, direction, origin_segments):
+    chain = []
+    previous_edge = edge
+    ordered = segments if direction == 1 else reversed(segments)
+    for segment in ordered:
+        seg_start = float(segment["start"])
+        seg_end = float(segment["end"])
+        if direction == 1:
+            if seg_end <= edge + 0.05:
+                continue
+            gap = seg_start - previous_edge
+            reached = seg_end - origin
+        else:
+            if seg_start >= edge - 0.05:
+                continue
+            gap = previous_edge - seg_end
+            reached = origin - seg_start
+        if gap > max_gap or reached > max_reach or _stop_break(segment.get("text") or ""):
+            break
+        chain.append(segment)
+        previous_edge = seg_end if direction == 1 else seg_start
+    if not chain:
+        return edge
+    counted = list(origin_segments) + chain
+    brand = _tagline_brand(counted, signoff_segments=chain)
+    last_keep = None
+    for segment in chain:
+        text = segment.get("text") or ""
+        branded = bool(brand and brand in _norm(text))
+        if _NEIGHBOR_CUE.search(text) or branded:
+            last_keep = segment
+    if last_keep is None:
+        return edge
+    return float(last_keep["end"] if direction == 1 else last_keep["start"])
+
+
+def with_show_trim(spans, duration, skip_first=0, skip_last=0):
+    """Union the show's saved edge trim with the detected ad spans."""
+    duration = float(duration or 0)
+    extra = []
+    skip_first = float(skip_first or 0)
+    skip_last = float(skip_last or 0)
+    if duration > 0 and skip_first > 0:
+        extra.append((0.0, min(skip_first, duration)))
+    if duration > 0 and skip_last > 0:
+        extra.append((max(0.0, duration - skip_last), duration))
+    return merge_spans(list(spans or []) + extra)
+
+
+def edge_ad_seconds(spans, duration):
+    """Return the leading and trailing ad blocks that touch the ends of the episode."""
+    duration = float(duration or 0)
+    ordered = merge_spans(spans or [], max_gap=1.5)
+    lead = 0.0
+    if ordered and ordered[0][0] <= 1.5:
+        lead = min(ordered[0][1], duration)
+    tail = 0.0
+    if ordered and duration > 0 and ordered[-1][1] >= duration - 1.5:
+        tail = max(0.0, duration - ordered[-1][0])
+    return lead, tail
+
+
+def measure_trim(episodes):
+    """Choose a trim that every sampled episode can bear.
+
+    The opening trim stays 0 when any episode begins with the show. The same
+    rule applies to the closing trim.
+    """
+    usable = [episode for episode in episodes if episode.get("spans") is not None]
+    if len(usable) < 2:
+        raise ValueError("Need at least two measured episodes")
+    leads = []
+    tails = []
+    for episode in usable:
+        lead, tail = edge_ad_seconds(episode.get("spans") or [], episode.get("duration") or 0)
+        leads.append(lead)
+        tails.append(tail)
+    return {
+        "skip_first": int(math.floor(min(leads) + 1e-6)),
+        "skip_last": int(math.floor(min(tails) + 1e-6)),
+    }
 
 
 def choose_cut_spans(phrase_spans, model_spans, chapter_spans):

@@ -6,15 +6,19 @@ from pydub.generators import Sine
 
 from ad_detect import (
     _deterministic_paid_fallback,
+    _finish_break,
     _verified_paid_has_commercial_grounding,
     candidate_windows,
     chapter_spans,
     choose_cut_spans,
     classify_transcript,
+    cover_neighboring_spots,
+    measure_trim,
     parse_model_spans,
     parse_verified_candidate,
     tighten_spans,
     transcript_windows,
+    with_show_trim,
 )
 
 
@@ -227,7 +231,7 @@ class ModelSpanTest(unittest.TestCase):
 
         self.assertEqual(
             classify_transcript(segments, duration=300, complete=complete),
-            [(10, 44), (45, 80)],
+            [(10, 80)],
         )
 
     def test_a_bound_longer_than_four_minutes_keeps_the_seed(self):
@@ -259,8 +263,8 @@ class ModelSpanTest(unittest.TestCase):
 
     def test_drops_a_pass_that_marks_more_than_a_third_of_the_episode(self):
         segments = [
-            {"start": 0, "end": 30, "text": "This episode is sponsored by Acme mats today"},
-            {"start": 30, "end": 90, "text": "Welcome back to the interview about sleep"},
+            {"start": 0, "end": 40, "text": "This episode is sponsored by Acme mats today"},
+            {"start": 40, "end": 90, "text": "Welcome back to the interview about sleep"},
         ]
 
         def complete(prompt):
@@ -343,7 +347,9 @@ class SponsorAwareRegressionTest(unittest.TestCase):
                 return self._line_response(prompt, "end_line", lambda line: sponsor in line.lower(), last=True)
             return "{}"
 
-        self.assertEqual(classify_transcript(segments, 300, complete), [(0, 28), (30, 60)])
+        spans = classify_transcript(segments, 300, complete)
+        self.assertTrue(any(start <= 0 and end >= 60 for start, end in spans))
+        self.assertFalse(any(start <= 60 < end for start, end in spans))
 
     def test_opening_commercial_survives_discovery_omission(self):
         segments = [
@@ -375,7 +381,9 @@ class SponsorAwareRegressionTest(unittest.TestCase):
                 )
             return "{}"
 
-        self.assertEqual(classify_transcript(segments, 300, complete), [(0, 28), (28, 61)])
+        spans = classify_transcript(segments, 300, complete)
+        self.assertTrue(any(start <= 0 and end >= 61 for start, end in spans))
+        self.assertFalse(any(start < 0 or end > 61 for start, end in spans))
 
     def test_ringcentral_boundary_does_not_expand_into_credits(self):
         segments = [
@@ -805,6 +813,167 @@ class TightenSpanTest(unittest.TestCase):
     def test_uniform_audio_keeps_the_original_edge(self):
         audio = Sine(220).to_audio_segment(duration=4000, volume=-6)
         self.assertEqual(tighten_spans(audio, [(1, 2)]), [(1, 2)])
+
+
+class ShowTrimTest(unittest.TestCase):
+    def test_trim_extends_a_detected_ad_that_runs_past_the_boundary(self):
+        self.assertEqual(
+            with_show_trim([(18, 28)], 100, skip_first=20, skip_last=10),
+            [(0, 28), (90, 100)],
+        )
+
+    def test_trim_is_applied_when_the_model_finds_nothing(self):
+        self.assertEqual(with_show_trim([], 380, skip_first=20, skip_last=10), [(0, 20), (370, 380)])
+
+
+class NeighboringSpotTest(unittest.TestCase):
+    def test_a_verified_spot_covers_the_other_messages_in_the_break(self):
+        segments = [
+            {"start": 60, "end": 70, "text": "This message comes from Capital One."},
+            {"start": 70, "end": 78, "text": "What's in your wallet? Terms apply."},
+            {"start": 79, "end": 90, "text": "This message comes from the Natural Resources Defense Council."},
+            {"start": 90, "end": 100, "text": "Protect America's air at nrdc.org slash first."},
+            {"start": 102, "end": 112, "text": "This message comes from Betterment."},
+            {"start": 112, "end": 120, "text": "Learn more at Betterment.com."},
+            {"start": 124, "end": 132, "text": "Oil companies are reporting another quarter of profits."},
+        ]
+
+        def complete(prompt):
+            if "candidate discovery" in prompt:
+                return _response([{"start": 60, "end": 78, "quote": "This message comes from Capital One."}])
+            if "Classify one candidate" in prompt:
+                if "Candidate: 60.0-78.0" in prompt or "capital one" in prompt.lower():
+                    return json.dumps({
+                        "classification": "paid_ad",
+                        "sponsor": "Capital One",
+                        "evidence_quote": "This message comes from Capital One.",
+                    })
+                return json.dumps({"classification": "editorial", "sponsor": "", "evidence_quote": "news"})
+            return "{}"
+
+        spans = classify_transcript(segments, 200, complete)
+        self.assertTrue(any(start <= 60 and end >= 120 for start, end in spans))
+        self.assertFalse(any(start <= 124 < end for start, end in spans))
+
+    def test_a_produced_spot_covers_the_next_spot_until_the_interview_returns(self):
+        segments = [
+            {"start": 10, "end": 20, "text": "Call 1-833-589-PAIN or visit Genavix.com."},
+            {"start": 20.4, "end": 28, "text": "The answer is Ecolab."},
+            {"start": 28, "end": 36, "text": "Ecolab. Now every location is your best location."},
+            {"start": 36.4, "end": 42, "text": "Martin, it's nice to talk to you again."},
+        ]
+        covered = cover_neighboring_spots(segments, [(10, 20)])
+        self.assertEqual(covered, [(10, 36)])
+
+    def test_a_code_and_url_host_read_is_cut_when_the_model_returns_nothing(self):
+        segments = [
+            {"start": 100, "end": 112, "text": "Every unit of matter contains quantum energy."},
+            {"start": 112, "end": 126, "text": "Try it free at quantumupgrade.io and use the code BEN15."},
+            {"start": 126, "end": 136, "text": "That's quantumupgrade.io. Use the code BEN15."},
+            {"start": 142, "end": 152, "text": "Rory Vaden runs a group called Brand Builders."},
+        ]
+        spans = classify_transcript(segments, 400, lambda prompt: "{}")
+        self.assertTrue(any(start <= 112 and end >= 136 for start, end in spans))
+        self.assertFalse(any(start <= 142 < end for start, end in spans))
+
+    def test_a_branded_preroll_is_cut_before_the_host_starts(self):
+        segments = [
+            {"start": 0, "end": 8, "text": "Morningstar helps clear the way for investors."},
+            {"start": 8, "end": 16, "text": "Helping bring clarity across public and private markets."},
+            {"start": 16, "end": 24, "text": "Morningstar. Nothing in your way."},
+            {"start": 27, "end": 34, "text": "Hey listeners, it's Saturday. I'm Jack Pitcher."},
+        ]
+        spans = classify_transcript(segments, 120, lambda prompt: "{}")
+        self.assertTrue(any(start <= 1 and 20 <= end <= 26 for start, end in spans))
+        self.assertFalse(any(start <= 27 < end for start, end in spans))
+
+    def test_a_branded_preroll_continues_through_credit_ratings_to_the_tagline(self):
+        segments = [
+            {"start": 0, "end": 8, "text": "Morningstar helps investors with data and credit ratings."},
+            {"start": 8, "end": 16, "text": "So you can move forward with conviction."},
+            {"start": 17.5, "end": 24, "text": "Morningstar. Nothing in your way."},
+            {"start": 27, "end": 34, "text": "Hey listeners, it's Saturday. I'm Jack Pitcher."},
+        ]
+        spans = classify_transcript(segments, 120, lambda prompt: "{}")
+        self.assertTrue(any(start <= 1 and 20 <= end <= 26 for start, end in spans))
+        self.assertFalse(any(start <= 27 < end for start, end in spans))
+
+    def test_a_cold_open_without_a_tagline_is_left_alone(self):
+        segments = [
+            {"start": 0, "end": 12, "text": "I met a man who said I used to be hundreds of pounds heavier."},
+            {"start": 12, "end": 24, "text": "What happened is my best friend's house burnt down and he had kids."},
+            {"start": 24, "end": 36, "text": "I realized that if my house caught fire I could not carry anyone."},
+            {"start": 40, "end": 48, "text": "Welcome to the show with your host."},
+        ]
+        self.assertEqual(classify_transcript(segments, 200, lambda prompt: "{}"), [])
+
+    def test_a_cold_open_that_repeats_an_ordinary_word_is_left_alone(self):
+        segments = [
+            {"start": 0, "end": 8, "text": "My name is Ben Greenfield, and on this episode of the Boundless Life podcast."},
+            {"start": 8, "end": 16, "text": "And so it's not suddenly I have more willpower."},
+            {"start": 16, "end": 24, "text": "It's not suddenly I'm a disciplined person."},
+            {"start": 28, "end": 36, "text": "Welcome to the show with your host."},
+        ]
+        self.assertEqual(classify_transcript(segments, 200, lambda prompt: "{}"), [])
+
+    def test_the_next_spot_stays_cut_after_the_first_url(self):
+        segments = [
+            {"start": 10, "end": 20, "text": "Visit Genavix.com and use the code PAIN."},
+            {"start": 20.4, "end": 28, "text": "The answer is Ecolab."},
+            {"start": 28, "end": 36, "text": "Ecolab. Now every location is your best location."},
+            {"start": 36.4, "end": 42, "text": "Martin, it's nice to talk to you again."},
+        ]
+        spans = classify_transcript(segments, 200, lambda prompt: "{}")
+        self.assertTrue(any(start <= 20 and end >= 36 for start, end in spans))
+        self.assertFalse(any(start <= 36.4 < end for start, end in spans))
+
+    def test_news_after_the_offer_is_left_in(self):
+        segments = [
+            {"start": 60, "end": 70, "text": "This message comes from Capital One."},
+            {"start": 70, "end": 80, "text": "Learn more at CapitalOne.com. Terms apply."},
+            {"start": 82, "end": 92, "text": "Oil companies are reporting another quarter of sky-high profits."},
+            {"start": 92, "end": 100, "text": "Thanks for being with us, Willa."},
+            {"start": 100, "end": 106, "text": "Thanks for having me."},
+        ]
+        self.assertEqual(_finish_break(segments, (60, 106)), (60, 80))
+
+    def test_a_long_pause_keeps_the_tease_before_the_closing_break(self):
+        segments = [
+            {"start": 954, "end": 965, "text": "Tomorrow on the Sunday Story, the president's party loses seats."},
+            {"start": 965, "end": 978, "text": "Thank you for listening and for supporting your local NPR station."},
+            {"start": 999, "end": 1010, "text": "Stay tuned for the following announcements and messages from our sponsors."},
+            {"start": 1048, "end": 1053, "text": "Use offer code DIFFERENCE for 50% off select plans."},
+        ]
+        self.assertEqual(_finish_break(segments, (954, 1053)), (999, 1053))
+
+    def test_an_offer_does_not_swallow_the_guest_introduction(self):
+        segments = [
+            {"start": 10, "end": 20, "text": "Try cacao bliss at trycacaobliss.com slash ben and get six free gifts."},
+            {"start": 20, "end": 28, "text": "That's trycacaobliss.com slash ben."},
+            {"start": 28.4, "end": 40, "text": "It's not often that I get to talk to a psychologist who helps people get stuff done."},
+            {"start": 40, "end": 52, "text": "The show notes are at bengreenfieldlife.com slash rory."},
+            {"start": 52, "end": 58, "text": "Let's do this. Rory, I don't remember how we met."},
+        ]
+        spans = classify_transcript(segments, 200, lambda prompt: "{}")
+        self.assertTrue(any(start <= 20 and end >= 28 for start, end in spans))
+        self.assertFalse(any(start <= 28.4 < end for start, end in spans))
+
+
+class MeasureTrimTest(unittest.TestCase):
+    def test_measure_trim_uses_the_shortest_shared_edge(self):
+        episodes = [
+            {"duration": 100, "spans": [(0, 30), (80, 100)]},
+            {"duration": 200, "spans": [(0, 20), (170, 200)]},
+            {"duration": 150, "spans": [(0, 25), (140, 150)]},
+        ]
+        self.assertEqual(measure_trim(episodes), {"skip_first": 20, "skip_last": 10})
+
+    def test_measure_trim_stays_zero_when_an_episode_starts_with_the_show(self):
+        episodes = [
+            {"duration": 100, "spans": [(0, 30), (90, 100)]},
+            {"duration": 100, "spans": [(40, 70)]},
+        ]
+        self.assertEqual(measure_trim(episodes), {"skip_first": 0, "skip_last": 0})
 
 
 if __name__ == "__main__":

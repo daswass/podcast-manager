@@ -172,7 +172,7 @@ def _sync_one(podcast_name, info, episode, ledger, deps):
     drive_path = deps["drive_path"](info, episode)
 
     if plan == "copy_sliced":
-        deps["copy_file"](entry["sliced_path"], drive_path)
+        _copy_episode(deps, podcast_name, title, entry["sliced_path"], drive_path)
         ledger.update(info["id"], episode_id, copied_sliced=True)
         return
 
@@ -197,7 +197,18 @@ def _sync_one(podcast_name, info, episode, ledger, deps):
         trimmed.parent.mkdir(parents=True, exist_ok=True)
         deps["render_trimmed"](info, str(original), trimmed)
         ledger.update(info["id"], episode_id, trimmed_path=str(trimmed))
-    deps["copy_file"](str(trimmed), drive_path)
+    _copy_episode(deps, podcast_name, title, str(trimmed), drive_path)
+
+
+def _copy_episode(deps, podcast_name, title, source, drive_path):
+    note = deps.get("note_copy")
+    if note:
+        note(podcast_name, title)
+    try:
+        deps["copy_file"](source, drive_path)
+    finally:
+        if note:
+            note(None, None)
 
 
 def _without_missing_files(entry):

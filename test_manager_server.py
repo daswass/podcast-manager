@@ -132,6 +132,20 @@ class ManagerApiTests(unittest.TestCase):
         self._live_marker(self.drive / "podcast_downloader_running.txt")
         self.assertEqual(self.client.get("/api/library").json()["job"], "copying")
 
+    def test_library_reports_the_file_being_copied(self):
+        self._live_marker(self.drive / "podcast_downloader_running.txt")
+        with patch("manager_server.read_copy_status", return_value={"show": "Up First", "title": "Morning"}):
+            body = self.client.get("/api/library").json()
+        self.assertEqual(body["job"], "copying")
+        self.assertEqual(body["copying"], {"show": "Up First", "title": "Morning"})
+
+    def test_library_hides_a_leftover_copy_name_when_idle(self):
+        with patch("manager_server.read_copy_status", return_value={"show": "Up First", "title": "Morning"}) as status:
+            body = self.client.get("/api/library").json()
+        self.assertIsNone(body["job"])
+        self.assertIsNone(body["copying"])
+        status.assert_not_called()
+
     def test_one_copy_process_holding_both_markers_shows_copying(self):
         self._live_marker(self.marker)
         self._live_marker(self.drive / "podcast_downloader_running.txt")
@@ -191,6 +205,52 @@ class ManagerApiTests(unittest.TestCase):
         self.assertEqual(response.json()["shows"][0]["cut_ads"], None)
         self.assertEqual(response.json()["job"], "downloading")
         self.assertEqual(self.shows.read_text(), before)
+
+    def test_measure_trim_starts_and_marks_the_show(self):
+        calls = []
+
+        def start(feed_id):
+            calls.append(feed_id)
+            return StillRunning(), None
+
+        app = create_app(
+            shows_path=self.shows,
+            drive_roots=[self.drive],
+            marker_paths=[self.marker],
+            start_calibrate=start,
+            ledger_path=self.ledger,
+            serve_ui=False,
+            load_episodes=lambda feed_id: {},
+            load_feed=lambda feed_id: {},
+        )
+        before = self.shows.read_text()
+        with TestClient(app) as client:
+            response = client.post("/api/shows/1/calibrate-trim")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(calls, [1])
+        self.assertEqual(response.json()["shows"][0]["status"], "measuring")
+        self.assertEqual(response.json()["job"], "measuring")
+        self.assertTrue(response.json()["prepare_busy"])
+        self.assertEqual(self.shows.read_text(), before)
+
+    def test_measure_trim_waits_until_prepare_finishes(self):
+        self.client.post("/api/shows/1/prepare")
+        response = self.client.post("/api/shows/1/calibrate-trim")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("already running", response.json()["error"])
+
+    def test_calibrate_marker_is_a_trim_measurement(self):
+        class Idle:
+            def running_feed(self):
+                return None
+
+        tmp = Path(TMP_RUNNING_MARKER)
+        command = "python podcastsToShokz.py --calibrate-trim 1"
+        with patch("manager_server._marker_live", return_value=True), patch("manager_server._marker_command", return_value=command):
+            self.assertEqual(_job_flags(Idle(), [tmp], []), "measuring")
+            self.marker.write_text(f"started=now\npid={os.getpid()}\nepoch=1\n")
+            body = self.client.get("/api/library").json()
+        self.assertEqual(body["prepare_reason"], "Trim measurement is already running")
 
     def test_prepare_starts_when_nothing_else_is_running(self):
         response = self.client.post("/api/shows/1/prepare")

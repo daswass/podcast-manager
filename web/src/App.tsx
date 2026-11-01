@@ -13,6 +13,7 @@ import {
   patchFolder,
   patchShow,
   cutShowAds,
+  measureShowTrim,
   prepareShow,
   resolveFeed,
   searchShows,
@@ -21,6 +22,7 @@ import {
   type ShowPatch,
   type ArchiveEpisode,
   type HeadphoneVolume,
+  type CopyTarget,
   type JobActivity,
   type Library,
   type SearchHit,
@@ -240,7 +242,7 @@ export function App() {
           <p className="tagline">Shows, folders, and the headphone drive</p>
         </div>
         <div className="top-status">
-          <ActivityBadges job={library?.job ?? null} />
+          <ActivityBadges job={library?.job ?? null} copying={library?.copying ?? null} />
           <nav className="nav">
           <button type="button" className={view === "library" ? "active" : ""} onClick={() => setView("library")}>
             Library
@@ -292,6 +294,14 @@ export function App() {
               if (error instanceof ApiError && error.status === 409) await reloadFromDisk();
             }
           }}
+          onMeasure={async (feedId) => {
+            try {
+              accept(await measureShowTrim(feedId));
+            } catch (error) {
+              setNotice(error instanceof Error ? error.message : "Trim measurement did not start");
+              if (error instanceof ApiError && error.status === 409) await reloadFromDisk();
+            }
+          }}
           archive={archive}
           archiveError={archiveError}
           onOpenEpisodes={() => void reloadArchive()}
@@ -303,27 +313,39 @@ export function App() {
   );
 }
 
-function ActivityBadge(props: { kind: "downloading" | "copying" | "running"; label: string; detail: string }) {
+function copyTargetLabel(copying: CopyTarget | null): string | null {
+  if (!copying) return null;
+  const show = copying.show.trim();
+  const title = copying.title.trim();
+  if (show && title) return `${show} — ${title}`;
+  return show || title || null;
+}
+
+function ActivityBadge(props: { kind: "downloading" | "measuring" | "copying" | "running"; label: string; detail: string; target?: string | null }) {
   return (
-    <span className={`activity ${props.kind}`} title={props.detail}>
+    <span className={`activity ${props.kind}`} title={props.target ?? props.detail}>
       {props.label}
+      {props.target ? <span className="activity-target">{props.target}</span> : null}
     </span>
   );
 }
 
-function ActivityBadges(props: { job: JobActivity }) {
+function ActivityBadges(props: { job: JobActivity; copying: CopyTarget | null }) {
+  const target = copyTargetLabel(props.copying);
   switch (props.job) {
     case null:
       return null;
     case "downloading":
       return <ActivityBadge kind="downloading" label="Downloading" detail="A prepare is downloading and processing shows." />;
+    case "measuring":
+      return <ActivityBadge kind="measuring" label="Measuring" detail="The shared opening and closing trim is being measured." />;
     case "copying":
-      return <ActivityBadge kind="copying" label="Copying" detail="Files are being copied to the headphones." />;
+      return <ActivityBadge kind="copying" label="Copying" detail="Files are being copied to the headphones." target={target} />;
     case "both":
       return (
         <>
           <ActivityBadge kind="downloading" label="Downloading" detail="A prepare is downloading and processing shows." />
-          <ActivityBadge kind="copying" label="Copying" detail="Files are being copied to the headphones." />
+          <ActivityBadge kind="copying" label="Copying" detail="Files are being copied to the headphones." target={target} />
         </>
       );
     case "running":
@@ -347,6 +369,7 @@ function Main(props: {
   onNotice: (message: string) => void;
   onPrepare: (feedId: number) => Promise<void>;
   onCutAds: (feedId: number) => Promise<void>;
+  onMeasure: (feedId: number) => Promise<void>;
   archive: ArchiveEpisode[] | null;
   archiveError: string;
   onOpenEpisodes: () => void;
@@ -366,6 +389,7 @@ function Main(props: {
           onNotice={props.onNotice}
           onPrepare={props.onPrepare}
           onCutAds={props.onCutAds}
+          onMeasure={props.onMeasure}
           archive={props.archive}
           archiveError={props.archiveError}
           onOpenEpisodes={props.onOpenEpisodes}
@@ -434,6 +458,7 @@ function LibraryView(props: {
   onNotice: (message: string) => void;
   onPrepare: (feedId: number) => Promise<void>;
   onCutAds: (feedId: number) => Promise<void>;
+  onMeasure: (feedId: number) => Promise<void>;
   archive: ArchiveEpisode[] | null;
   archiveError: string;
   onOpenEpisodes: () => void;
@@ -569,6 +594,7 @@ function LibraryView(props: {
           onNotice={props.onNotice}
           onPrepare={props.onPrepare}
           onCutAds={props.onCutAds}
+          onMeasure={props.onMeasure}
           archive={props.archive}
           archiveError={props.archiveError}
           onOpenEpisodes={props.onOpenEpisodes}
@@ -605,6 +631,7 @@ function FolderSection(props: {
   onNotice: (message: string) => void;
   onPrepare: (feedId: number) => Promise<void>;
   onCutAds: (feedId: number) => Promise<void>;
+  onMeasure: (feedId: number) => Promise<void>;
   archive: ArchiveEpisode[] | null;
   archiveError: string;
   onOpenEpisodes: () => void;
@@ -740,6 +767,7 @@ function FolderSection(props: {
           onNotice={props.onNotice}
           onPrepare={props.onPrepare}
           onCutAds={props.onCutAds}
+          onMeasure={props.onMeasure}
           episodes={props.archive?.filter((episode) => episode.show === show.name) ?? []}
           archiveReady={props.archive !== null}
           archiveError={props.archiveError}
@@ -763,12 +791,14 @@ function ShowRow(props: {
   onNotice: (message: string) => void;
   onPrepare: (feedId: number) => Promise<void>;
   onCutAds: (feedId: number) => Promise<void>;
+  onMeasure: (feedId: number) => Promise<void>;
   episodes: ArchiveEpisode[];
   archiveReady: boolean;
   archiveError: string;
   playback: Playback;
 }) {
   const preparing = props.show.status === "preparing";
+  const measuring = props.show.status === "measuring";
   const reason = preparing ? "Preparing this show" : props.prepareReason;
   const [cutsAds, setCutsAds] = useState(props.show.effective_cut_ads);
   useEffect(() => {
@@ -856,6 +886,25 @@ function ShowRow(props: {
           <span className="option-sep" aria-hidden="true">·</span>
           {formatDuration(props.show.skip_last)}
         </span>
+        <button
+          type="button"
+          className="quiet measure-trim"
+          disabled={props.prepareBusy || measuring}
+          title={
+            measuring
+              ? "Measuring the shared trim from the three newest episodes"
+              : props.prepareBusy
+                ? props.prepareReason ?? "Another job is already running"
+                : "Measure the shared opening and closing trim from the three newest episodes"
+          }
+          onClick={() => {
+            const replace = `Measure the trim for ${props.show.name} from its three newest episodes? This replaces the saved start and end trim.`;
+            if (!window.confirm(replace)) return;
+            void props.onMeasure(props.show.feed_id);
+          }}
+        >
+          {measuring ? "Measuring" : "Measure trim"}
+        </button>
         <span className="option" title={`Speed ${formatSpeed(props.show.playback_speed)}`}>
           <ClockMark />
           {formatSpeed(props.show.playback_speed)}
@@ -1656,6 +1705,8 @@ function statusLabel(status: ShowStatus): string {
   switch (status) {
     case "preparing":
       return "Preparing";
+    case "measuring":
+      return "Measuring";
     case "sliced":
     case "trimmed":
       return "Ads";
@@ -1672,6 +1723,8 @@ function statusDetail(status: ShowStatus): string {
   switch (status) {
     case "preparing":
       return "Prepare is running for this show.";
+    case "measuring":
+      return "The shared opening and closing trim is being measured from the three newest episodes.";
     case "sliced":
       return "The latest episode had its ads removed.";
     case "trimmed":

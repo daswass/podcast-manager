@@ -245,6 +245,70 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual((drive / "BioHack" / "Huberman Lab - Episode.mp3").read_bytes(), b"sliced-audio")
             self.assertTrue(ledger.get(10, 7)["copied_sliced"])
 
+    def test_sync_notes_the_episode_only_while_the_file_is_copying(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sliced = root / "sliced.mp3"
+            sliced.write_bytes(b"sliced-audio")
+            drive = root / "drive"
+            ledger = EpisodeLedger(root / "ledger.json")
+            ledger.update(10, 7, downloaded=True, original_path=str(root / "raw.mp3"), sliced=True, sliced_path=str(sliced), copied_sliced=False, title="Episode")
+            notes = []
+            seen_during_copy = []
+
+            def copy_file(src, dst):
+                seen_during_copy.append(list(notes))
+                Path(dst).parent.mkdir(parents=True, exist_ok=True)
+                Path(dst).write_bytes(Path(src).read_bytes())
+
+            def note_copy(show, title):
+                notes.append((show, title))
+
+            deps = {
+                "fetch_episodes": lambda info: [episode()],
+                "download": lambda url, dest: None,
+                "render_trimmed": lambda info, source, dest: None,
+                "copy_file": copy_file,
+                "note_copy": note_copy,
+                "prune": lambda category_dir, podcast_name, keep: None,
+                "original_path": lambda info, ep: root / "raw.mp3",
+                "trimmed_path": lambda info, ep: root / "trimmed.mp3",
+                "sliced_path": lambda info, ep: sliced,
+                "drive_path": lambda info, ep: drive / "BioHack" / "Huberman Lab - Episode.mp3",
+                "safe_title": lambda title: title,
+            }
+            run_sync(str(drive), feed(), ledger, deps)
+            self.assertEqual(seen_during_copy, [[("Huberman Lab", "Episode")]])
+            self.assertEqual(notes, [("Huberman Lab", "Episode"), (None, None)])
+
+    def test_sync_clears_the_copy_note_when_the_copy_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sliced = root / "sliced.mp3"
+            sliced.write_bytes(b"sliced-audio")
+            ledger = EpisodeLedger(root / "ledger.json")
+            ledger.update(10, 7, downloaded=True, original_path=str(root / "raw.mp3"), sliced=True, sliced_path=str(sliced), copied_sliced=False, title="Episode")
+            notes = []
+
+            def copy_file(src, dst):
+                raise OSError("disk full")
+
+            deps = {
+                "fetch_episodes": lambda info: [episode()],
+                "download": lambda url, dest: None,
+                "render_trimmed": lambda info, source, dest: None,
+                "copy_file": copy_file,
+                "note_copy": lambda show, title: notes.append((show, title)),
+                "prune": lambda category_dir, podcast_name, keep: None,
+                "original_path": lambda info, ep: root / "raw.mp3",
+                "trimmed_path": lambda info, ep: root / "trimmed.mp3",
+                "sliced_path": lambda info, ep: sliced,
+                "drive_path": lambda info, ep: root / "drive" / "episode.mp3",
+                "safe_title": lambda title: title,
+            }
+            run_sync(str(root / "drive"), feed(), ledger, deps)
+            self.assertEqual(notes, [("Huberman Lab", "Episode"), (None, None)])
+
     def test_sync_downloads_and_trims_when_the_episode_is_new(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
