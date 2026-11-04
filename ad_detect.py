@@ -50,6 +50,17 @@ _OBVIOUS_HOUSE_PROMO = re.compile(
     r"would like to advertise on|subject line advertising|send your question as a voice note)\b",
     re.IGNORECASE,
 )
+_MESSAGE_INTRO = re.compile(
+    r"\b(?:this message comes from|support for this show comes from|"
+    r"this (?:podcast|episode) is supported by)\b",
+    re.IGNORECASE,
+)
+_MESSAGE_SPONSOR = re.compile(
+    r"\b(?:this message comes from|support for this show comes from|"
+    r"this (?:podcast|episode) is supported by)"
+    r"\s+([A-Za-z0-9][A-Za-z0-9,&'’.-]*(?:\s+[A-Za-z0-9][A-Za-z0-9,&'’.-]*){0,4})",
+    re.IGNORECASE,
+)
 _NEIGHBOR_CUE = re.compile(
     r"\b(?:this message comes from|this (?:podcast|episode) is supported by|"
     r"brought to you by|stay tuned for the following|use (?:the )?code|promo code|"
@@ -353,6 +364,7 @@ def classify_transcript(segments, duration, complete):
         + _opening_block_candidates(segments)
         + _post_ident_candidates(segments)
         + _code_url_candidates(segments)
+        + _message_candidates(segments)
         + _branded_preroll_candidates(segments)
     )
     for window in candidate_windows(segments):
@@ -671,7 +683,8 @@ def _deterministic_paid_fallback(context, candidate):
     )
     branded = bool(candidate.get("branded_preroll") and candidate.get("sponsor"))
     offered = bool(candidate.get("offer_read") and (_OFFER_CUE.search(candidate_text) or _COMMERCIAL_CTA.search(candidate_text)))
-    if _FALLBACK_EXCLUSION.search(candidate_text) or not (explicit or commercial or branded or offered):
+    message = bool(candidate.get("message_read") and _MESSAGE_INTRO.search(candidate_text))
+    if _FALLBACK_EXCLUSION.search(candidate_text) or not (explicit or commercial or branded or offered or message):
         return None
     sponsor = candidate.get("sponsor") or _fallback_sponsor(candidate_text, candidate_text)
     if not sponsor:
@@ -710,6 +723,45 @@ def _show_prefix(segments):
     return _tagline_brand(segments, period=True) is None
 
 
+def _message_body_start(covered):
+    """Move past host talk that was pulled in ahead of the sponsor intro."""
+    prefix = []
+    for segment in covered:
+        text = segment.get("text") or ""
+        match = _MESSAGE_INTRO.search(text)
+        if match is None:
+            prefix.append(segment)
+            continue
+        if match.start() > 0:
+            prefix.append({"text": text[:match.start()]})
+        if not prefix or not _show_prefix(prefix):
+            return None
+        duration = float(segment["end"]) - float(segment["start"])
+        fraction = match.start() / len(text) if text else 0
+        return float(segment["start"]) + duration * fraction
+    return None
+
+
+def _without_host_suffix(kept):
+    """Drop the host once the sponsor's offer has already been said."""
+    if not kept:
+        return kept
+    brand = _tagline_brand(kept) or ""
+    last_ad = None
+    for index, segment in enumerate(kept):
+        if _spot_continues(segment.get("text") or "", brand):
+            last_ad = index
+    if last_ad is None or last_ad == len(kept) - 1:
+        return kept
+    offered = any(
+        _COMMERCIAL_CTA.search(kept[index].get("text") or "")
+        for index in range(last_ad + 1)
+    )
+    if not offered:
+        return kept
+    return kept[:last_ad + 1]
+
+
 def _finish_break(segments, span, pause=8):
     """Drop a show tease before a long pause, and the news that follows an offer."""
     covered = [
@@ -719,6 +771,9 @@ def _finish_break(segments, span, pause=8):
     if not covered:
         return span
     start = float(span[0])
+    intro = _message_body_start(covered)
+    if intro is not None:
+        start = max(start, intro)
     prefix = []
     for previous, nxt in zip(covered, covered[1:]):
         prefix.append(previous)
@@ -727,29 +782,37 @@ def _finish_break(segments, span, pause=8):
             prefix = []
     kept = []
     for segment in covered:
-        if float(segment["start"]) < start - 0.05:
+        if float(segment["end"]) <= start + 0.05:
             continue
         if _SHOW_RETURN.search(segment.get("text") or ""):
             break
         kept.append(segment)
     if not kept:
         return span
+    kept = _without_host_suffix(kept)
     end = float(kept[-1]["end"])
-    last_close = None
+    last_offer = None
     for index, segment in enumerate(kept):
-        if _is_closing_line(segment.get("text")):
-            last_close = index
-    if last_close is not None:
+        text = segment.get("text") or ""
+        if _is_closing_line(text) or _COMMERCIAL_CTA.search(text):
+            last_offer = index
+    if last_offer is not None:
         brand = _tagline_brand(kept, period=True)
-        extend = last_close
-        for index in range(last_close + 1, len(kept)):
-            if brand and brand in _norm(kept[index].get("text")):
+        extend = last_offer
+        for index in range(last_offer + 1, len(kept)):
+            text = kept[index].get("text") or ""
+            if (brand and brand in _norm(text)) or _spot_continues(text, brand):
                 extend = index
         end = float(kept[extend]["end"])
     end = min(float(span[1]), end)
     if end <= start:
         return span
     return (start, end)
+
+
+def finish_breaks(segments, spans):
+    """Drop show talk that a later snap or neighbor walk pulled into a sponsor read."""
+    return merge_spans(_finish_break(segments, span) for span in spans or [])
 
 
 def _trim_after_commercial_close(segments, span):
@@ -844,6 +907,61 @@ def _merge_verified_candidates(candidates):
             continue
         merged.append(dict(candidate))
     return merged
+
+
+def _message_sponsor(text):
+    match = _MESSAGE_SPONSOR.search(text or "")
+    if match is None:
+        return None
+    name = re.split(r"\s+(?:a|an|the)\s+|[.!?]", match.group(1), maxsplit=1)[0]
+    name = name.strip(" ,:-")
+    if len(name) < 2:
+        return None
+    return name
+
+
+def _spot_continues(text, sponsor):
+    """A line after the offer that still belongs to the same sponsor read."""
+    if _MESSAGE_INTRO.search(text) or _ad_line(text) or _is_closing_line(text):
+        return True
+    if re.search(r"\b(?:fdic|terms and conditions|conditions apply)\b", text, re.IGNORECASE):
+        return True
+    key = _sponsor_key(sponsor or "")
+    if not key:
+        return False
+    compact = re.sub(r"[^a-z0-9]", "", _norm(text))
+    return key in compact
+
+
+def _message_candidates(segments):
+    """Seed each produced sponsor intro as its own spot, including the pitch."""
+    candidates = []
+    for index, segment in enumerate(segments):
+        text = segment.get("text") or ""
+        if not _MESSAGE_INTRO.search(text):
+            continue
+        sponsor = _message_sponsor(text)
+        block = [segment]
+        saw_offer = False
+        for later in segments[index + 1:]:
+            if float(later["start"]) - float(block[-1]["end"]) > 2.2:
+                break
+            later_text = later.get("text") or ""
+            if _MESSAGE_INTRO.search(later_text) or _stop_break(later_text):
+                break
+            if saw_offer and not _spot_continues(later_text, sponsor):
+                break
+            block.append(later)
+            if _COMMERCIAL_CTA.search(later_text):
+                saw_offer = True
+        candidates.append({
+            "start": float(block[0]["start"]),
+            "end": float(block[-1]["end"]),
+            "quote": _norm(text),
+            "sponsor": sponsor,
+            "message_read": True,
+        })
+    return candidates
 
 
 def _code_url_candidates(segments):
@@ -1413,7 +1531,14 @@ def _same_sponsor(left, right):
 
 def _is_closing_line(text):
     norm = _norm(text)
-    return any(word in norm for word in _CLOSING_WORDS)
+    for word in _CLOSING_WORDS:
+        if word.startswith(".") or " " in word:
+            if word in norm:
+                return True
+            continue
+        if re.search(rf"(?<![a-z0-9-]){re.escape(word)}(?![a-z0-9-])", norm):
+            return True
+    return False
 
 
 def _line_index(value, count):

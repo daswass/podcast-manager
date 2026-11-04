@@ -18,6 +18,7 @@ from ad_detect import (
     choose_cut_spans,
     classify_transcript,
     cover_neighboring_spots,
+    finish_breaks,
     edge_ad_seconds,
     measure_trim,
     tighten_spans,
@@ -447,6 +448,9 @@ def render_sliced_episode(info, source_path, dest_path, segments, trace=None):
     selected_spans = choose_cut_spans(phrase_spans, model_spans, publisher)
     spans = tighten_spans(audio, selected_spans)
     spans = cover_neighboring_spots(segments, spans)
+    # Tightening can step back into the sign-off, and the neighbor walk can
+    # step forward into the host. Settle both edges against the transcript.
+    spans = finish_breaks(segments, spans)
     spans = with_show_trim(
         spans,
         audio_seconds,

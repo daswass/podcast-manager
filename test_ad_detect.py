@@ -946,6 +946,103 @@ class NeighboringSpotTest(unittest.TestCase):
         ]
         self.assertEqual(_finish_break(segments, (954, 1053)), (999, 1053))
 
+    def test_a_message_before_a_long_break_is_cut_on_its_own(self):
+        segments = [
+            {"start": 1961, "end": 1964, "text": "When we come back, we'll have some more questions."},
+            {"start": 1967, "end": 1971, "text": "This message comes from Mercury, a lead sponsor of Machine Gods."},
+            {"start": 1971, "end": 1976, "text": "Mercury is radically different banking. It is fast and simple."},
+            {"start": 1976, "end": 1985, "text": "You can pay bills and set spending limits."},
+            {"start": 1985.8, "end": 1991.7, "text": "Loved by entrepreneurs, Mercury is banking designed for your high standards."},
+            {"start": 1991.9, "end": 1995, "text": "Visit Mercury.com to learn more and apply online in minutes."},
+            {"start": 1995, "end": 2002, "text": "Banking services provided through Choice Financial Group, members FDIC."},
+            {"start": 2002, "end": 2006, "text": "This message comes from LinkedIn ads."},
+            {"start": 2006, "end": 2086, "text": "Advertise on LinkedIn. Just go to linkedin.com slash NPR pod. Terms apply."},
+            {"start": 2087, "end": 2094, "text": "Welcome back. Kevin, what's next up?"},
+        ]
+
+        def complete(prompt):
+            if "candidate discovery" in prompt:
+                return _response([{"start": 2002, "end": 2086, "quote": "This message comes from LinkedIn ads."}])
+            if "Classify one candidate" in prompt:
+                if "linkedin" in prompt.lower():
+                    return json.dumps({
+                        "classification": "paid_ad",
+                        "sponsor": "LinkedIn",
+                        "evidence_quote": "This message comes from LinkedIn ads.",
+                    })
+                return json.dumps({"classification": "editorial", "sponsor": "", "evidence_quote": "not an ad"})
+            return "{}"
+
+        spans = classify_transcript(segments, 2200, complete)
+        self.assertTrue(any(start <= 1967 and end >= 2002 for start, end in spans))
+        self.assertFalse(any(start <= 1961 < end for start, end in spans))
+        self.assertFalse(any(start <= 2087 < end for start, end in spans))
+
+    def test_the_host_after_the_sponsor_url_is_left_in(self):
+        segments = [
+            {"start": 3057, "end": 3062, "text": "This message comes from Capella University."},
+            {"start": 3062, "end": 3070, "text": "Earn your degree at your pace without putting life on pause."},
+            {"start": 3070, "end": 3072, "text": "Learn more at capella.edu."},
+            {"start": 3073, "end": 3080, "text": "I'm a little underslept today because I saw Phoebe Bridgers."},
+            {"start": 3080, "end": 3111, "text": "It was a phone-free show at Chase Center."},
+        ]
+
+        def complete(prompt):
+            if "candidate discovery" in prompt:
+                return _response([{
+                    "start": 3057,
+                    "end": 3111,
+                    "quote": "This message comes from Capella University. Learn more at capella.edu.",
+                }])
+            if "Classify one candidate" in prompt:
+                return json.dumps({
+                    "classification": "paid_ad",
+                    "sponsor": "Capella",
+                    "evidence_quote": "Learn more at capella.edu.",
+                })
+            return "{}"
+
+        spans = classify_transcript(segments, 3200, complete)
+        self.assertTrue(any(start <= 3057 and 3070 <= end <= 3073 for start, end in spans))
+        self.assertFalse(any(start <= 3073 < end for start, end in spans))
+
+    def test_a_later_sponsor_stays_cut_through_its_own_url(self):
+        segments = [
+            {"start": 3052, "end": 3055, "text": "Just go to linkedin.com slash nprpod."},
+            {"start": 3055, "end": 3057, "text": "Terms and conditions apply."},
+            {"start": 3057, "end": 3060, "text": "This message comes from Capella University."},
+            {"start": 3060, "end": 3069, "text": "That spark you feel is your drive for more."},
+            {"start": 3069, "end": 3071, "text": "Learn more at capella.edu."},
+            {"start": 3073, "end": 3080, "text": "I'm a little underslept today because I saw Phoebe Bridgers."},
+        ]
+        self.assertEqual(_finish_break(segments, (3052, 3080)), (3052, 3071))
+
+    def test_host_words_on_the_sponsor_intro_line_are_left_in(self):
+        segments = [
+            {
+                "start": 2973.52,
+                "end": 2980.48,
+                "text": "love to hear those too this message comes from doppel a lead sponsor of machine gods",
+            },
+            {"start": 2981.02, "end": 3003.32, "text": "Learn more at doppel.com."},
+        ]
+        start, end = _finish_break(segments, (2973.52, 3003.32))
+        self.assertGreater(start, 2975)
+        self.assertLess(start, 2977)
+        self.assertEqual(end, 3003.32)
+
+    def test_the_signoff_before_the_closing_ads_is_left_in(self):
+        segments = [
+            {"start": 3180, "end": 3186, "text": "Email hey at machine gods dot fm or leave a comment on our socials."},
+            {"start": 3186, "end": 3192, "text": "Please don't forget to like and subscribe and until next time stay blessed."},
+            {"start": 3192, "end": 3200, "text": "This message comes from Capella University."},
+            {"start": 3200, "end": 3208, "text": "Learn more at capella.edu."},
+            {"start": 3208, "end": 3216, "text": "This message comes from Easy Cater."},
+            {"start": 3216, "end": 3224, "text": "Learn more at easycater.com."},
+        ]
+
+        self.assertEqual(_finish_break(segments, (3180, 3224)), (3192, 3224))
+
     def test_an_offer_does_not_swallow_the_guest_introduction(self):
         segments = [
             {"start": 10, "end": 20, "text": "Try cacao bliss at trycacaobliss.com slash ben and get six free gifts."},
