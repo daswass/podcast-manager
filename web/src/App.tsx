@@ -125,6 +125,8 @@ function usePlayback(): Playback & { audioRef: RefObject<HTMLAudioElement | null
 type DropTarget = { name: string; place: "before" | "after" };
 type Save = (key: string, run: (version: string) => Promise<Library>) => Promise<string | null>;
 
+type ShowPreview = Partial<Pick<Show, "skip_first" | "skip_last" | "playback_speed" | "num_episodes">>;
+
 export function App() {
   const [view, setView] = useState<View>("library");
   const [library, setLibrary] = useState<Library | null>(null);
@@ -139,14 +141,41 @@ export function App() {
   const versionRef = useRef("");
   const generation = useRef(0);
   const hasLibrary = useRef(false);
+  const replaced = useRef(new Set<string>());
+  const holds = useRef(0);
   const chains = useRef(new Map<string, Promise<string | null>>());
+
+  function remember(next: Library) {
+    const previous = versionRef.current;
+    if (previous && previous !== next.version) replaced.current.add(previous);
+    replaced.current.delete(next.version);
+    versionRef.current = next.version;
+  }
 
   function accept(next: Library) {
     generation.current += 1;
-    versionRef.current = next.version;
+    remember(next);
     hasLibrary.current = true;
     setLibrary(next);
     setLoadError("");
+  }
+
+  function previewShow(feedId: number, fields: ShowPreview) {
+    setLibrary((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        shows: current.shows.map((show) => (show.feed_id === feedId ? { ...show, ...fields } : show)),
+      };
+    });
+  }
+
+  function holdPolls() {
+    holds.current += 1;
+  }
+
+  function releasePolls() {
+    holds.current = Math.max(0, holds.current - 1);
   }
 
   async function reloadFromDisk() {
@@ -194,7 +223,9 @@ export function App() {
       try {
         const next = await getLibrary();
         if (cancelled || seen !== generation.current) return;
-        versionRef.current = next.version;
+        // The poll can still be the copy from before a save. Leave the row on the saved trim.
+        if (replaced.current.has(next.version) || holds.current > 0) return;
+        remember(next);
         hasLibrary.current = true;
         setLibrary(next);
         setLoadError("");
@@ -275,6 +306,9 @@ export function App() {
           activeFolder={activeFolder}
           adding={adding}
           enqueue={enqueue}
+          onPreview={previewShow}
+          holdPolls={holdPolls}
+          releasePolls={releasePolls}
           onActivate={setActiveFolder}
           onAdding={setAdding}
           onNotice={setNotice}
@@ -364,6 +398,9 @@ function Main(props: {
   activeFolder: string | null;
   adding: boolean;
   enqueue: Save;
+  onPreview: (feedId: number, fields: ShowPreview) => void;
+  holdPolls: () => void;
+  releasePolls: () => void;
   onActivate: (folder: string) => void;
   onAdding: (open: boolean) => void;
   onNotice: (message: string) => void;
@@ -384,6 +421,9 @@ function Main(props: {
           adding={props.adding}
           activeFolder={props.activeFolder}
           enqueue={props.enqueue}
+          onPreview={props.onPreview}
+          holdPolls={props.holdPolls}
+          releasePolls={props.releasePolls}
           onActivate={props.onActivate}
           onAdding={props.onAdding}
           onNotice={props.onNotice}
@@ -453,6 +493,9 @@ function LibraryView(props: {
   adding: boolean;
   activeFolder: string | null;
   enqueue: Save;
+  onPreview: (feedId: number, fields: ShowPreview) => void;
+  holdPolls: () => void;
+  releasePolls: () => void;
   onActivate: (folder: string) => void;
   onAdding: (open: boolean) => void;
   onNotice: (message: string) => void;
@@ -590,6 +633,9 @@ function LibraryView(props: {
           prepareReason={library.prepare_reason}
           headphoneVolume={library.headphone_volume}
           enqueue={props.enqueue}
+          onPreview={props.onPreview}
+          holdPolls={props.holdPolls}
+          releasePolls={props.releasePolls}
           onActivate={() => props.onActivate(folder.name)}
           onNotice={props.onNotice}
           onPrepare={props.onPrepare}
@@ -627,6 +673,9 @@ function FolderSection(props: {
   prepareReason: string | null;
   headphoneVolume: string | null;
   enqueue: Save;
+  onPreview: (feedId: number, fields: ShowPreview) => void;
+  holdPolls: () => void;
+  releasePolls: () => void;
   onActivate: () => void;
   onNotice: (message: string) => void;
   onPrepare: (feedId: number) => Promise<void>;
@@ -756,6 +805,9 @@ function FolderSection(props: {
           prepareReason={props.prepareReason}
           headphoneVolume={props.headphoneVolume}
           enqueue={props.enqueue}
+          onPreview={props.onPreview}
+          holdPolls={props.holdPolls}
+          releasePolls={props.releasePolls}
           onToggle={() => {
             props.onActivate();
             setOpenFeed((current) => {
@@ -787,6 +839,9 @@ function ShowRow(props: {
   prepareReason: string | null;
   headphoneVolume: string | null;
   enqueue: Save;
+  onPreview: (feedId: number, fields: ShowPreview) => void;
+  holdPolls: () => void;
+  releasePolls: () => void;
   onToggle: () => void;
   onNotice: (message: string) => void;
   onPrepare: (feedId: number) => Promise<void>;
@@ -941,6 +996,9 @@ function ShowRow(props: {
           folders={props.folders}
           resetToken={props.resetToken}
           enqueue={props.enqueue}
+          onPreview={(fields) => props.onPreview(props.show.feed_id, fields)}
+          holdPolls={props.holdPolls}
+          releasePolls={props.releasePolls}
         />
       ) : null}
     </article>
@@ -980,15 +1038,27 @@ function ShowEditor(props: {
   folders: { name: string; cut_ads: boolean }[];
   resetToken: number;
   enqueue: Save;
+  onPreview: (fields: ShowPreview) => void;
+  holdPolls: () => void;
+  releasePolls: () => void;
 }) {
   const [draft, setDraft] = useState<Draft>(() => draftFrom(props.show));
   const focused = useRef(false);
   const seen = useRef(props.resetToken);
   const timers = useRef(new Map<string, number>());
+  const queued = useRef(new Map<string, ShowPatch>());
+  const holding = useRef(new Set<string>());
+  const enqueueRef = useRef(props.enqueue);
+  const releaseRef = useRef(props.releasePolls);
+  const holdRef = useRef(props.holdPolls);
+  const flushRef = useRef<(key: string) => void>(() => undefined);
+  enqueueRef.current = props.enqueue;
+  releaseRef.current = props.releasePolls;
+  holdRef.current = props.holdPolls;
 
   useEffect(() => {
     const staleReload = props.resetToken !== seen.current;
-    if (focused.current && !staleReload) return;
+    if ((focused.current || queued.current.size > 0) && !staleReload) return;
     seen.current = props.resetToken;
     setDraft(draftFrom(props.show));
   }, [
@@ -1001,27 +1071,49 @@ function ShowEditor(props: {
     props.show.cut_ads,
   ]);
 
+  flushRef.current = (key: string) => {
+    const fields = queued.current.get(key);
+    if (!fields) return;
+    queued.current.delete(key);
+    const timer = timers.current.get(key);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      timers.current.delete(key);
+    }
+    const feedId = props.show.feed_id;
+    void enqueueRef.current(`show-${feedId}`, (version) =>
+      patchShow(feedId, { ...fields, version }),
+    ).finally(() => {
+      if (holding.current.delete(key)) releaseRef.current();
+    });
+  };
+
   useEffect(() => {
-    const pending = timers.current;
+    const queuedFields = queued.current;
+    const pendingTimers = timers.current;
     return () => {
-      for (const id of pending.values()) window.clearTimeout(id);
+      for (const id of pendingTimers.values()) window.clearTimeout(id);
+      pendingTimers.clear();
+      for (const key of [...queuedFields.keys()]) flushRef.current(key);
     };
   }, []);
 
   function save(fields: ShowPatch, delay: number, key: string) {
     const existing = timers.current.get(key);
-    if (existing !== undefined) window.clearTimeout(existing);
-    const send = () => {
+    if (existing !== undefined) {
+      window.clearTimeout(existing);
       timers.current.delete(key);
-      void props.enqueue(`show-${props.show.feed_id}`, (version) =>
-        patchShow(props.show.feed_id, { ...fields, version }),
-      );
-    };
+    }
+    queued.current.set(key, fields);
+    if (!holding.current.has(key)) {
+      holding.current.add(key);
+      holdRef.current();
+    }
     if (delay === 0) {
-      send();
+      flushRef.current(key);
       return;
     }
-    timers.current.set(key, window.setTimeout(send, delay));
+    timers.current.set(key, window.setTimeout(() => flushRef.current(key), delay));
   }
 
   return (
@@ -1059,7 +1151,10 @@ function ShowEditor(props: {
             const skipFirst = event.target.value;
             setDraft({ ...draft, skipFirst });
             const parsed = parseWhole(skipFirst);
-            if (parsed !== null) save({ skip_first: parsed }, 300, "skip_first");
+            if (parsed !== null) {
+              props.onPreview({ skip_first: parsed });
+              save({ skip_first: parsed }, 300, "skip_first");
+            }
           }}
         />
       </label>
@@ -1073,7 +1168,10 @@ function ShowEditor(props: {
             const skipLast = event.target.value;
             setDraft({ ...draft, skipLast });
             const parsed = parseWhole(skipLast);
-            if (parsed !== null) save({ skip_last: parsed }, 300, "skip_last");
+            if (parsed !== null) {
+              props.onPreview({ skip_last: parsed });
+              save({ skip_last: parsed }, 300, "skip_last");
+            }
           }}
         />
       </label>
@@ -1088,7 +1186,10 @@ function ShowEditor(props: {
             const speed = event.target.value;
             setDraft({ ...draft, speed });
             const parsed = parseSpeed(speed);
-            if (parsed !== null) save({ playback_speed: parsed }, 300, "speed");
+            if (parsed !== null) {
+              props.onPreview({ playback_speed: parsed });
+              save({ playback_speed: parsed }, 300, "speed");
+            }
           }}
         />
       </label>
@@ -1102,7 +1203,10 @@ function ShowEditor(props: {
             const count = event.target.value;
             setDraft({ ...draft, count });
             const parsed = parseCount(count);
-            if (parsed !== null) save({ num_episodes: parsed }, 300, "count");
+            if (parsed !== null) {
+              props.onPreview({ num_episodes: parsed });
+              save({ num_episodes: parsed }, 300, "count");
+            }
           }}
         />
       </label>

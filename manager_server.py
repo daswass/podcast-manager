@@ -185,6 +185,13 @@ def create_app(
     jobs = PrepareJobs()
     app = FastAPI()
 
+    @app.middleware("http")
+    async def do_not_cache_api(request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     def view():
         library = load_library(shows_path)
         running = jobs.running_feed()

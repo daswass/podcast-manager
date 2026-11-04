@@ -124,6 +124,10 @@ class ManagerApiTests(unittest.TestCase):
     def test_idle_library_has_no_running_job(self):
         self.assertIsNone(self.client.get("/api/library").json()["job"])
 
+    def test_library_responses_are_not_cached(self):
+        response = self.client.get("/api/library")
+        self.assertEqual(response.headers["cache-control"], "no-store")
+
     def test_prepare_marker_shows_downloading(self):
         self._live_marker(self.marker)
         self.assertEqual(self.client.get("/api/library").json()["job"], "downloading")
