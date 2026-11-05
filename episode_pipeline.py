@@ -64,7 +64,54 @@ def run_prepare(feeds, ledger, deps):
             ledger.prune_feed(info["id"], keep_ids)
 
 
+def _published_after(episode, since):
+    published = episode.get("datePublished")
+    if published is None:
+        return True
+    try:
+        return float(published) > float(since or 0)
+    except (TypeError, ValueError):
+        return True
+
+
+def _drive_relative(drive_root, drive_path):
+    path = Path(drive_path)
+    if not drive_root:
+        return path.as_posix()
+    try:
+        return path.resolve().relative_to(Path(drive_root).resolve()).as_posix()
+    except (ValueError, OSError):
+        return path.as_posix()
+
+
+def _leave_on_headphones(episode, info, since, drive_path, replace, relative="", removed=()):
+    """Skip a copy the headphones already settled.
+
+    ``podcast_downloader_last_run.txt`` remembers the last finished run, so an
+    episode from before that stays off the drive. ``podcast_downloader_removed.txt``
+    remembers a file the listener deleted. A file that is already there is left alone.
+    """
+    if replace:
+        return None
+    if relative and relative in removed:
+        return "removed from headphones"
+    if Path(drive_path).is_file():
+        return "already on headphones"
+    if info.get("force_latest"):
+        return None
+    if not _published_after(episode, since):
+        return "published before the last headphone run"
+    return None
+
+
+def _remember_copy(ledger, info, episode_id):
+    entry = ledger.get(info["id"], episode_id)
+    if entry and entry.get("sliced") and not entry.get("copied_sliced"):
+        ledger.update(info["id"], episode_id, copied_sliced=True)
+
+
 def run_sync(drive_root, feeds, ledger, deps):
+    since = deps.get("last_run", 0) or 0
     for podcast_name, info in feeds:
         try:
             episodes = list(deps["fetch_episodes"](info) or [])
@@ -73,13 +120,14 @@ def run_sync(drive_root, feeds, ledger, deps):
             continue
         count = info.get("force_latest") or info.get("num_episodes", 1)
         episodes = episodes[:count]
-        for episode in episodes:
+        for index, episode in enumerate(episodes):
             episode_id = episode.get("id")
             if episode_id is None:
                 print(f"\tSkipping an episode of {podcast_name} with no id")
                 continue
+            replace = index == 0 and bool(info.get("force_slice_latest"))
             try:
-                _sync_one(podcast_name, info, episode, ledger, deps)
+                _sync_one(podcast_name, info, episode, ledger, deps, since=since, replace=replace)
             except Exception as error:
                 print(f"ERROR: Failed to sync '{podcast_name}' episode {episode_id}: {error}")
         if episodes and deps.get("prune"):
@@ -161,15 +209,24 @@ def _prepare_one(podcast_name, info, episode, ledger, deps):
     })
 
 
-def _sync_one(podcast_name, info, episode, ledger, deps):
+def _sync_one(podcast_name, info, episode, ledger, deps, since=0, replace=False):
     episode_id = episode["id"]
     info = dict(info)
     info["podcast_name"] = podcast_name
     entry = _without_missing_files(ledger.get(info["id"], episode_id))
-    plan = sync_plan(entry)
     title = episode.get("title") or "episode"
-    print(f"\nSync: {podcast_name} — {title} [{plan}]")
     drive_path = deps["drive_path"](info, episode)
+    relative = _drive_relative(deps.get("drive_root"), drive_path)
+    removed = {str(item) for item in deps.get("removed") or ()}
+    reason = _leave_on_headphones(
+        episode, info, since, drive_path, replace, relative=relative, removed=removed,
+    )
+    if reason:
+        print(f"\nSync: {podcast_name} — {title} [{reason}]")
+        _remember_copy(ledger, info, episode_id)
+        return
+    plan = sync_plan(entry)
+    print(f"\nSync: {podcast_name} — {title} [{plan}]")
 
     if plan == "copy_sliced":
         _copy_episode(deps, podcast_name, title, entry["sliced_path"], drive_path)

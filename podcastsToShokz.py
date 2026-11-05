@@ -118,6 +118,33 @@ def update_last_run_timestamp(usb_drive_base_dir):
     
     return last_run
 
+REMOVED_NAME = "podcast_downloader_removed.txt"
+
+
+def removed_episode_paths(drive_root):
+    path = Path(drive_root) / REMOVED_NAME
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return set()
+    return {line.strip().replace("\\", "/") for line in lines if line.strip()}
+
+
+def remember_removed_episode(drive_root, relative):
+    """Remember a file the listener deleted so a later run does not copy it back."""
+    cleaned = str(relative or "").strip().replace("\\", "/").lstrip("/")
+    if not cleaned or cleaned.startswith("../") or "/../" in f"/{cleaned}/":
+        return
+    if cleaned in removed_episode_paths(drive_root):
+        return
+    path = Path(drive_root) / REMOVED_NAME
+    try:
+        with path.open("a") as handle:
+            handle.write(cleaned + "\n")
+    except OSError as error:
+        print(f"Warning: Could not record removed episode {cleaned}: {error}")
+
+
 RUNNING_MARKER_NAME = "podcast_downloader_running.txt"
 TMP_RUNNING_MARKER = "/tmp/podcast_downloader_running.txt"
 COPY_STATUS_NAME = "copying.txt"
@@ -527,6 +554,9 @@ def _sync_dependencies(support, drive_root):
         "trimmed_path": lambda info, episode: trimmed_episode_path(support, info["podcast_name"], info, episode),
         "sliced_path": lambda info, episode: sliced_episode_path(support, info["podcast_name"], info, episode),
         "drive_path": lambda info, episode: drive_episode_path(drive_root, info["podcast_name"], info, episode),
+        "drive_root": drive_root,
+        "last_run": get_last_run_timestamp(drive_root),
+        "removed": removed_episode_paths(drive_root),
         "safe_title": safe_episode_title,
     }
 

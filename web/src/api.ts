@@ -198,6 +198,10 @@ export function getHeadphones(): Promise<HeadphoneVolume[]> {
   return request<{ volumes: HeadphoneVolume[] }>("/api/headphones").then((body) => body.volumes);
 }
 
+export function runHeadphones(): Promise<Library> {
+  return request<Library>("/api/headphones/run", { method: "POST" });
+}
+
 export function deleteHeadphoneFile(volume: string, path: string): Promise<void> {
   return request<{ ok: boolean }>("/api/headphones", {
     method: "DELETE",

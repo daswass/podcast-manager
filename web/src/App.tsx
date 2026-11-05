@@ -10,6 +10,7 @@ import {
   getArchive,
   getHeadphones,
   getLibrary,
+  runHeadphones,
   patchFolder,
   patchShow,
   cutShowAds,
@@ -336,6 +337,14 @@ export function App() {
               if (error instanceof ApiError && error.status === 409) await reloadFromDisk();
             }
           }}
+          onRun={async () => {
+            try {
+              accept(await runHeadphones());
+            } catch (error) {
+              if (error instanceof ApiError && error.status === 409) await reloadFromDisk();
+              throw error;
+            }
+          }}
           archive={archive}
           archiveError={archiveError}
           onOpenEpisodes={() => void reloadArchive()}
@@ -407,6 +416,7 @@ function Main(props: {
   onPrepare: (feedId: number) => Promise<void>;
   onCutAds: (feedId: number) => Promise<void>;
   onMeasure: (feedId: number) => Promise<void>;
+  onRun: () => Promise<void>;
   archive: ArchiveEpisode[] | null;
   archiveError: string;
   onOpenEpisodes: () => void;
@@ -446,7 +456,15 @@ function Main(props: {
         />
       );
     case "headphones":
-      return <HeadphonesView shows={props.library.shows} onNotice={props.onNotice} />;
+      return (
+        <HeadphonesView
+          shows={props.library.shows}
+          prepareBusy={props.library.prepare_busy}
+          prepareReason={props.library.prepare_reason}
+          onNotice={props.onNotice}
+          onRun={props.onRun}
+        />
+      );
     default: {
       const unexpected: never = props.view;
       return unexpected;
@@ -1564,9 +1582,16 @@ function withoutFile(volumes: HeadphoneVolume[] | null, volume: string, path: st
   });
 }
 
-function HeadphonesView(props: { shows: Show[]; onNotice: (message: string) => void }) {
+function HeadphonesView(props: {
+  shows: Show[];
+  prepareBusy: boolean;
+  prepareReason: string | null;
+  onNotice: (message: string) => void;
+  onRun: () => Promise<void>;
+}) {
   const [volumes, setVolumes] = useState<HeadphoneVolume[] | null>(null);
   const [error, setError] = useState("");
+  const [starting, setStarting] = useState(false);
   const epoch = useRef(0);
   const reload = useRef<() => void>(() => undefined);
 
@@ -1638,9 +1663,36 @@ function HeadphonesView(props: { shows: Show[]; onNotice: (message: string) => v
   const artByShow = new Map(
     props.shows.flatMap((show) => (show.image ? [[show.name, show.image] as const] : [])),
   );
+  const busy = props.prepareBusy || starting;
+
+  async function run() {
+    setStarting(true);
+    try {
+      await props.onRun();
+      setError("");
+    } catch (runError) {
+      const message = runError instanceof Error ? runError.message : "The headphone update did not start";
+      setError(message);
+      props.onNotice(message);
+    } finally {
+      setStarting(false);
+    }
+  }
 
   return (
     <main className="page">
+      <div className="folder-head headphones-bar">
+        <h2>Headphones</h2>
+        <button
+          type="button"
+          className="prepare"
+          disabled={busy}
+          title={busy ? props.prepareReason ?? "An update is already running" : "Copy ready episodes to the headphones"}
+          onClick={() => void run()}
+        >
+          Run now
+        </button>
+      </div>
       {error ? <p className="banner">{error}</p> : null}
       {volumes && volumes.length === 0 ? (
         <p className="empty">Plug in SWIMBUDS or OpenSwim to see the files on the headphones.</p>

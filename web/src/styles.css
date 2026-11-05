@@ -216,6 +216,10 @@ input:focus, select:focus, button:focus-visible {
 
 .folder-head { margin-bottom: 8px; }
 
+.headphones-bar { justify-content: space-between; }
+
+.headphones-bar h2 { margin: 0; font-weight: 600; }
+
 .drag-handle {
   appearance: none;
   flex: none;

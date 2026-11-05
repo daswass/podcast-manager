@@ -40,6 +40,7 @@ from podcastsToShokz import (
     running_marker_is_stale,
     episode_filename,
     read_copy_status,
+    remember_removed_episode,
     safe_episode_title,
 )
 
@@ -119,6 +120,12 @@ class PrepareJobs:
         self.log_path = log_path
         self.kind = kind
 
+    def begin_run(self, process, log_path):
+        self.feed_id = None
+        self.process = process
+        self.log_path = log_path
+        self.kind = "copy"
+
     def error_for(self, feed_id):
         self._reap()
         return self.errors.get(int(feed_id))
@@ -133,10 +140,11 @@ class PrepareJobs:
         if self.log_path is not None and Path(self.log_path).exists():
             text = Path(self.log_path).read_text(errors="replace")
         message = _prepare_error(text, code)
-        if message:
-            self.errors[self.feed_id] = message
-        else:
-            self.errors.pop(self.feed_id, None)
+        if self.feed_id is not None:
+            if message:
+                self.errors[self.feed_id] = message
+            else:
+                self.errors.pop(self.feed_id, None)
         self.process = None
         self.feed_id = None
         self.log_path = None
@@ -149,6 +157,7 @@ def create_app(
     marker_paths=None,
     start_prepare=None,
     start_calibrate=None,
+    start_headphone_run=None,
     ledger_path=None,
     archive_root=None,
     static_dir=None,
@@ -175,6 +184,8 @@ def create_app(
         start_prepare = _start_prepare_process
     if start_calibrate is None:
         start_calibrate = _start_calibrate_process
+    if start_headphone_run is None:
+        start_headphone_run = _start_headphone_run
     if load_episodes is None:
         load_episodes = _load_feed_episodes
     if load_feed is None:
@@ -408,11 +419,23 @@ def create_app(
         try:
             with _HEADPHONE_LOCK:
                 _commit_unlink(target)
+                remember_removed_episode(root, body.path)
                 _DRIVE_FILES_CACHE.pop(str(root), None)
         except OSError as error:
             detail = error.strerror or str(error)
             return JSONResponse({"error": f"Could not remove that file from {body.volume}: {detail}"}, status_code=409)
         return {"ok": True}
+
+    @app.post("/api/headphones/run")
+    def run_headphones():
+        if _active_headphone_root(drive_roots) is None:
+            return JSONResponse({"error": "Plug in SWIMBUDS or OpenSwim first"}, status_code=409)
+        reason = _prepare_block_reason(jobs, marker_paths)
+        if reason:
+            return JSONResponse({"error": reason}, status_code=409)
+        process, log_path = start_headphone_run()
+        jobs.begin_run(process, log_path)
+        return library_response()
 
     @app.post("/api/shows/{feed_id}/prepare")
     def prepare_show(feed_id: int):
@@ -497,6 +520,19 @@ def _start_calibrate_process(feed_id):
     return process, log_path
 
 
+def _start_headphone_run():
+    log_path = Path("/tmp/podcast-headphone-run.log")
+    command = [sys.executable, str(REPO / "podcastsToShokz.py")]
+    with log_path.open("w") as handle:
+        process = subprocess.Popen(
+            command,
+            cwd=str(REPO),
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+        )
+    return process, log_path
+
+
 def _start_prepare_process(feed_id, force_slice=False):
     log_path = Path(f"/tmp/podcast-prepare-{feed_id}.log")
     command = [sys.executable, str(REPO / "podcastsToShokz.py"), "--prepare-show", str(feed_id)]
@@ -530,8 +566,10 @@ def _prepare_block_reason(jobs, marker_paths):
     marker = _live_marker_reason(marker_paths)
     if marker:
         return marker
-    running = jobs.running_feed()
-    if running is not None:
+    jobs.running_feed()
+    if getattr(jobs, "process", None) is not None:
+        if getattr(jobs, "kind", "prepare") == "copy":
+            return "Headphones are being updated"
         return "Another prepare is already running"
     return None
 
@@ -585,10 +623,11 @@ def _marker_job(path, drive_roots):
 
 
 def _job_flags(jobs, prepare_markers, drive_roots):
-    running = jobs.running_feed() is not None
-    measuring = running and getattr(jobs, "kind", "prepare") == "measure"
-    downloading = running and not measuring
-    copying = False
+    feed = jobs.running_feed()
+    kind = getattr(jobs, "kind", "prepare")
+    measuring = feed is not None and kind == "measure"
+    downloading = feed is not None and kind != "measure"
+    copying = getattr(jobs, "process", None) is not None and kind == "copy"
     ambiguous = False
     seen = set()
     live = []

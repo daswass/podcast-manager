@@ -350,6 +350,87 @@ class PipelineTest(unittest.TestCase):
             self.assertTrue(stored["downloaded"])
             self.assertFalse(stored["sliced"])
 
+    def test_sync_leaves_an_episode_published_before_the_last_headphone_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            drive = root / "drive"
+            ledger = EpisodeLedger(root / "ledger.json")
+            calls = {"copy": 0}
+
+            deps = {
+                "fetch_episodes": lambda info: [episode()],
+                "download": lambda url, dest: calls.__setitem__("copy", calls["copy"] + 1),
+                "render_trimmed": lambda info, source, dest: calls.__setitem__("copy", calls["copy"] + 1),
+                "copy_file": lambda src, dst: calls.__setitem__("copy", calls["copy"] + 1),
+                "prune": lambda category_dir, podcast_name, keep: None,
+                "original_path": lambda info, ep: root / "raw.mp3",
+                "trimmed_path": lambda info, ep: root / "trimmed.mp3",
+                "sliced_path": lambda info, ep: root / "sliced.mp3",
+                "drive_path": lambda info, ep: drive / "BioHack" / "Huberman Lab - Episode.mp3",
+                "safe_title": lambda title: title,
+                "last_run": 99999,
+            }
+            run_sync(str(drive), feed(), ledger, deps)
+            self.assertEqual(calls["copy"], 0)
+            self.assertFalse((drive / "BioHack" / "Huberman Lab - Episode.mp3").exists())
+
+    def test_sync_leaves_a_file_that_is_already_on_the_headphones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sliced = root / "sliced.mp3"
+            sliced.write_bytes(b"sliced-audio")
+            drive = root / "drive"
+            dest = drive / "BioHack" / "Huberman Lab - Episode.mp3"
+            dest.parent.mkdir(parents=True)
+            dest.write_bytes(b"already-there")
+            ledger = EpisodeLedger(root / "ledger.json")
+            ledger.update(10, 7, downloaded=True, original_path=str(root / "raw.mp3"), sliced=True, sliced_path=str(sliced), copied_sliced=False, title="Episode")
+            calls = {"copy": 0}
+
+            deps = {
+                "fetch_episodes": lambda info: [episode()],
+                "download": lambda url, dest: None,
+                "render_trimmed": lambda info, source, dest: None,
+                "copy_file": lambda src, dst: calls.__setitem__("copy", calls["copy"] + 1),
+                "prune": lambda category_dir, podcast_name, keep: None,
+                "original_path": lambda info, ep: root / "raw.mp3",
+                "trimmed_path": lambda info, ep: root / "trimmed.mp3",
+                "sliced_path": lambda info, ep: sliced,
+                "drive_path": lambda info, ep: dest,
+                "safe_title": lambda title: title,
+                "last_run": 0,
+            }
+            run_sync(str(drive), feed(), ledger, deps)
+            self.assertEqual(calls["copy"], 0)
+            self.assertEqual(dest.read_bytes(), b"already-there")
+            self.assertTrue(ledger.get(10, 7)["copied_sliced"])
+
+    def test_sync_leaves_an_episode_the_listener_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            drive = root / "drive"
+            dest = drive / "BioHack" / "Huberman Lab - Episode.mp3"
+            ledger = EpisodeLedger(root / "ledger.json")
+            calls = {"copy": 0}
+            deps = {
+                "fetch_episodes": lambda info: [episode()],
+                "download": lambda url, dest: calls.__setitem__("copy", calls["copy"] + 1),
+                "render_trimmed": lambda info, source, dest: calls.__setitem__("copy", calls["copy"] + 1),
+                "copy_file": lambda src, dst: calls.__setitem__("copy", calls["copy"] + 1),
+                "prune": lambda category_dir, podcast_name, keep: None,
+                "original_path": lambda info, ep: root / "raw.mp3",
+                "trimmed_path": lambda info, ep: root / "trimmed.mp3",
+                "sliced_path": lambda info, ep: root / "sliced.mp3",
+                "drive_path": lambda info, ep: dest,
+                "drive_root": drive,
+                "safe_title": lambda title: title,
+                "last_run": 0,
+                "removed": {"BioHack/Huberman Lab - Episode.mp3"},
+            }
+            run_sync(str(drive), feed(), ledger, deps)
+            self.assertEqual(calls["copy"], 0)
+            self.assertFalse(dest.exists())
+
     def test_needs_copy_flag_tracks_unsynced_slices(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -128,6 +128,56 @@ class ManagerApiTests(unittest.TestCase):
         response = self.client.get("/api/library")
         self.assertEqual(response.headers["cache-control"], "no-store")
 
+    def test_run_now_starts_the_headphone_update(self):
+        calls = []
+
+        def start():
+            calls.append("run")
+            return StillRunning(), None
+
+        app = create_app(
+            shows_path=self.shows,
+            drive_roots=[self.drive],
+            marker_paths=[self.marker],
+            start_headphone_run=start,
+            ledger_path=self.ledger,
+            serve_ui=False,
+            load_episodes=lambda feed_id: {},
+            load_feed=lambda feed_id: {},
+        )
+        with TestClient(app) as client:
+            response = client.post("/api/headphones/run")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(calls, ["run"])
+            self.assertEqual(response.json()["job"], "copying")
+            self.assertTrue(response.json()["prepare_busy"])
+            again = client.post("/api/headphones/run")
+        self.assertEqual(again.status_code, 409)
+        self.assertEqual(calls, ["run"])
+
+    def test_run_now_refuses_when_the_headphones_are_unplugged(self):
+        calls = []
+
+        def start():
+            calls.append("run")
+            return StillRunning(), None
+
+        app = create_app(
+            shows_path=self.shows,
+            drive_roots=[Path(self.tmp.name) / "missing"],
+            marker_paths=[self.marker],
+            start_headphone_run=start,
+            ledger_path=self.ledger,
+            serve_ui=False,
+            load_episodes=lambda feed_id: {},
+            load_feed=lambda feed_id: {},
+        )
+        with TestClient(app) as client:
+            response = client.post("/api/headphones/run")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("Plug in", response.json()["error"])
+        self.assertEqual(calls, [])
+
     def test_prepare_marker_shows_downloading(self):
         self._live_marker(self.marker)
         self.assertEqual(self.client.get("/api/library").json()["job"], "downloading")
@@ -447,6 +497,8 @@ class ManagerApiTests(unittest.TestCase):
         self.assertEqual(gone.status_code, 200)
         self.assertFalse(episode.exists())
         self.assertFalse((self.drive / "News" / "._Up First.mp3").exists())
+        removed = (self.drive / "podcast_downloader_removed.txt").read_text().splitlines()
+        self.assertEqual(removed, ["News/Up First.mp3"])
         missing = self.client.request(
             "DELETE",
             "/api/headphones",
