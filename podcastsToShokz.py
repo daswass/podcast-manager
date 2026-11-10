@@ -300,32 +300,53 @@ def trim_audio(episode_file_path, skip_first, skip_last):
         trimmed_audio.export(episode_file_path, format="mp3")
         print_mp3_duration(trimmed_audio, num_tabs=2)
 
-def squeeze_audio(episode_file_path, playback_speed):
-    if playback_speed != 1.0:
-        try:
-            audio = AudioSegment.from_mp3(episode_file_path)
-            os.remove(episode_file_path)
+# One shared speaking level. Applied only while an episode is already being
+# re-encoded for an ad cut or a speed change.
+LOUDNESS_FILTER = "loudnorm=I=-14:TP=-1.5:LRA=11"
 
-            print(f"\tChanging speed: [{playback_speed}x] ...")
 
-            audio.export(episode_file_path, format="mp3", parameters=["-filter:a", f"atempo={playback_speed}"])
-            
-            squeezed_audio = AudioSegment.from_mp3(episode_file_path)
-            print_mp3_duration(squeezed_audio, num_tabs=2)
-        except Exception as e:
-            print(f"\tFailed to squeeze audio: {e}")
+def playback_filters(playback_speed, cut):
+    speed = float(playback_speed or 1.0)
+    filters = []
+    if speed != 1.0:
+        filters.append(f"atempo={speed:g}")
+    if cut or speed != 1.0:
+        filters.append(LOUDNESS_FILTER)
+    return ",".join(filters)
 
-def process_audio(info, episode_file_path, apply_trim=True):
+
+def export_mp3(segment, path, filters=""):
+    arguments = {"format": "mp3"}
+    if filters:
+        arguments["parameters"] = ["-filter:a", filters]
+    segment.export(str(path), **arguments)
+
+
+def process_audio(info, episode_file_path, apply_trim=True, cut=False):
     audio = AudioSegment.from_mp3(episode_file_path)
     print_mp3_duration(audio)
-    
+
     skip_first = info.get("skip_first", 0)  # Default to 0 if not specified
     skip_last = info.get("skip_last", 0)  # Default to 0 if not specified
     playback_speed = info.get("playback_speed", 1.0)  # Default to normal speed (1.0)
 
     if apply_trim:
         trim_audio(episode_file_path, skip_first, skip_last)
-    squeeze_audio(episode_file_path, playback_speed)
+    filters = playback_filters(playback_speed, cut)
+    if not filters:
+        return
+    speed = float(playback_speed or 1.0)
+    if speed != 1.0:
+        print(f"\tChanging speed: [{speed:g}x] ...")
+    print("\tLeveling to -14 LUFS ...")
+    try:
+        encoded = AudioSegment.from_mp3(episode_file_path)
+        os.remove(episode_file_path)
+        export_mp3(encoded, episode_file_path, filters)
+        if os.path.exists(episode_file_path):
+            print_mp3_duration(AudioSegment.from_mp3(episode_file_path), num_tabs=2)
+    except Exception as error:
+        print(f"\tFailed to process audio: {error}")
 
 def retry_api_call(func, *args, max_retries=3, initial_delay=1, **kwargs):
     """Retry an API call with exponential backoff"""
@@ -337,38 +358,29 @@ def retry_api_call(func, *args, max_retries=3, initial_delay=1, **kwargs):
             return func(*args, **kwargs)
         except requests.exceptions.HTTPError as e:
             last_exception = e
-            # Check if it's a 500 error and we have retries left
-            if hasattr(e, 'response') and e.response is not None and e.response.status_code == 500:
-                if attempt < max_retries - 1:
-                    print(f"\tAPI call failed with 500 error (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
-                    time.sleep(delay)
-                    delay *= 2  # Exponential backoff
-                else:
-                    print(f"\tAPI call failed after {max_retries} attempts. Last error: {e}")
-                    raise
-            else:
-                # For non-500 errors, don't retry
-                raise
-        except Exception as e:
-            # For other exceptions, don't retry
+            status = e.response.status_code if getattr(e, "response", None) is not None else None
+            if status == 500 and attempt < max_retries - 1:
+                print(f"\tAPI call failed with 500 error (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            if status == 500:
+                print(f"\tAPI call failed after {max_retries} attempts. Last error: {e}")
+            raise
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                print(f"\tAPI call failed ({type(e).__name__}, attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                time.sleep(delay)
+                delay *= 2
+                continue
+            print(f"\tAPI call failed after {max_retries} attempts. Last error: {e}")
             raise
     
     if last_exception:
         raise last_exception
 
 SHOWS_PATH = Path(__file__).resolve().parent / "shows.json"
-
-
-def _feed_url(feed_id):
-    result = retry_api_call(index.podcastByFeedId, feed_id)
-    feed = (result or {}).get("feed")
-    if isinstance(feed, list):
-        if len(feed) == 0:
-            raise ValueError(f"No feed found for id {feed_id}")
-        return feed[0]["url"]
-    if isinstance(feed, dict):
-        return feed["url"]
-    raise ValueError(f"Unexpected feed type for id {feed_id}: {type(feed)}")
 
 
 # Spotify's prefix hosts embed the real media URL in the path, then refuse
@@ -499,11 +511,11 @@ def render_sliced_episode(info, source_path, dest_path, segments, trace=None):
         # post-roll. Applying them after a detected cut would remove the show.
         print(f"\tRemoving {len(spans)} ad span(s)")
         cut_ads(audio, spans).export(str(dest), format="mp3")
-        process_audio(info, str(dest), apply_trim=False)
+        process_audio(info, str(dest), apply_trim=False, cut=True)
     else:
         print("\tNo ad spans found; using the saved speed")
         shutil.copy(source_path, dest)
-        process_audio(info, str(dest), apply_trim=False)
+        process_audio(info, str(dest), apply_trim=False, cut=False)
     return audio_seconds
 
 
@@ -597,15 +609,10 @@ def load_podcast_feeds():
     except LibraryError as error:
         print(f"ERROR: {error}")
         raise SystemExit(1)
-    feeds = []
-    for show in library["shows"]:
-        try:
-            url = _feed_url(show["feed_id"])
-            feeds.append((show["name"], feed_settings(show, library, url)))
-        except Exception as error:
-            print(f"ERROR: Failed to initialize podcast '{show['name']}': {error}")
-            print("       Skipping this podcast and continuing with others...")
-    return feeds
+    # The feed id in the library is enough to prepare and copy. Asking Podcast
+    # Index for each show's page URL dropped every show when DNS failed, and
+    # the job then reported the show as missing.
+    return [(show["name"], feed_settings(show, library, "")) for show in library["shows"]]
 
 
 def select_feeds(feeds, only_feed_id):
@@ -632,12 +639,16 @@ def _run_podcast_update(usb_drive_base_dir):
     support = support_dir()
     ledger = EpisodeLedger(support / "ledger.json")
     print("Copying ready episodes and downloading anything not prepared yet...")
+    checked = False
     try:
-        run_sync(usb_drive_base_dir, feeds, ledger, _sync_dependencies(support, usb_drive_base_dir))
+        checked = run_sync(usb_drive_base_dir, feeds, ledger, _sync_dependencies(support, usb_drive_base_dir))
     finally:
         prune_local_archive(ledger, support)
         refresh_needs_copy(ledger, support / "needs_copy")
-    update_last_run_timestamp(usb_drive_base_dir)
+    if checked:
+        update_last_run_timestamp(usb_drive_base_dir)
+    else:
+        print("ERROR: A show could not be checked, so the headphone timestamp was left unchanged.")
     print("Podcast episodes organized and downloaded. Big Day!")
 
 def mounted_headphone_drive():

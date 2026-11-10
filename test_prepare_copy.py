@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import requests
+
 import podcastsToShokz
 
 
@@ -81,6 +83,78 @@ class CopyStatusTest(unittest.TestCase):
     def test_missing_status_is_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(podcastsToShokz.read_copy_status(tmp))
+
+
+class FeedLoadTest(unittest.TestCase):
+    def test_shows_load_from_the_library_without_calling_podcast_index(self):
+        library = {
+            "folders": [{"name": "BioHack", "cut_ads": True}],
+            "shows": [{
+                "name": "Ben Greenfield Life",
+                "feed_id": 310787,
+                "folder": "BioHack",
+                "skip_first": 315,
+                "skip_last": 30,
+                "playback_speed": 1.5,
+                "num_episodes": 1,
+                "cut_ads": None,
+            }],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "shows.json"
+            path.write_text(json.dumps(library))
+            with (
+                patch("podcastsToShokz.SHOWS_PATH", path),
+                patch("podcastsToShokz.index.podcastByFeedId", side_effect=AssertionError("network")),
+            ):
+                feeds = podcastsToShokz.load_podcast_feeds()
+        self.assertEqual(feeds[0][0], "Ben Greenfield Life")
+        self.assertEqual(feeds[0][1]["id"], 310787)
+
+    def test_a_dropped_connection_is_retried(self):
+        calls = {"count": 0}
+
+        def flaky():
+            calls["count"] += 1
+            if calls["count"] < 3:
+                raise requests.exceptions.ConnectionError("Failed to resolve 'api.podcastindex.org'")
+            return {"items": []}
+
+        with patch("podcastsToShokz.time.sleep"):
+            result = podcastsToShokz.retry_api_call(flaky, max_retries=3, initial_delay=0)
+        self.assertEqual(result, {"items": []})
+        self.assertEqual(calls["count"], 3)
+
+    def test_an_authorization_error_is_not_retried(self):
+        calls = {"count": 0}
+
+        def denied():
+            calls["count"] += 1
+            response = requests.Response()
+            response.status_code = 401
+            raise requests.exceptions.HTTPError("401", response=response)
+
+        with patch("podcastsToShokz.time.sleep"):
+            with self.assertRaises(requests.exceptions.HTTPError):
+                podcastsToShokz.retry_api_call(denied, max_retries=3, initial_delay=0)
+        self.assertEqual(calls["count"], 1)
+
+    def test_a_failed_lookup_leaves_the_headphone_timestamp_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            drive = Path(tmp)
+            with (
+                patch("podcastsToShokz.load_podcast_feeds", return_value=[("Ben Greenfield Life", {"id": 310787})]),
+                patch("podcastsToShokz.EpisodeLedger"),
+                patch("podcastsToShokz.run_sync", return_value=False),
+                patch("podcastsToShokz.prune_local_archive"),
+                patch("podcastsToShokz.refresh_needs_copy"),
+                patch("podcastsToShokz.update_last_run_timestamp") as stamp,
+                patch("podcastsToShokz.support_dir", return_value=drive),
+                patch("podcastsToShokz.note_copy"),
+                patch("podcastsToShokz._sync_dependencies", return_value={}),
+            ):
+                podcastsToShokz._run_podcast_update(str(drive))
+        stamp.assert_not_called()
 
 
 class PrepareMainCopyTest(unittest.TestCase):

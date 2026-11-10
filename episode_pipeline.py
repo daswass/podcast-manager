@@ -112,11 +112,13 @@ def _remember_copy(ledger, info, episode_id):
 
 def run_sync(drive_root, feeds, ledger, deps):
     since = deps.get("last_run", 0) or 0
+    checked = True
     for podcast_name, info in feeds:
         try:
             episodes = list(deps["fetch_episodes"](info) or [])
         except Exception as error:
             print(f"ERROR: Failed to fetch '{podcast_name}': {error}")
+            checked = False
             continue
         count = info.get("force_latest") or info.get("num_episodes", 1)
         episodes = episodes[:count]
@@ -133,6 +135,7 @@ def run_sync(drive_root, feeds, ledger, deps):
         if episodes and deps.get("prune"):
             category_dir = str(Path(drive_root) / info["category"])
             deps["prune"](category_dir, podcast_name, count)
+    return checked
 
 
 def _prepare_one(podcast_name, info, episode, ledger, deps):

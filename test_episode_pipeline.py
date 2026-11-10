@@ -370,9 +370,32 @@ class PipelineTest(unittest.TestCase):
                 "safe_title": lambda title: title,
                 "last_run": 99999,
             }
-            run_sync(str(drive), feed(), ledger, deps)
+            self.assertTrue(run_sync(str(drive), feed(), ledger, deps))
             self.assertEqual(calls["copy"], 0)
             self.assertFalse((drive / "BioHack" / "Huberman Lab - Episode.mp3").exists())
+
+    def test_sync_reports_when_a_show_cannot_be_checked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ledger = EpisodeLedger(root / "ledger.json")
+
+            def fetch_episodes(info):
+                raise OSError("Failed to resolve 'api.podcastindex.org'")
+
+            deps = {
+                "fetch_episodes": fetch_episodes,
+                "download": lambda url, dest: None,
+                "render_trimmed": lambda info, source, dest: None,
+                "copy_file": lambda src, dst: None,
+                "prune": lambda category_dir, podcast_name, keep: None,
+                "original_path": lambda info, ep: root / "raw.mp3",
+                "trimmed_path": lambda info, ep: root / "trimmed.mp3",
+                "sliced_path": lambda info, ep: root / "sliced.mp3",
+                "drive_path": lambda info, ep: root / "drive" / "episode.mp3",
+                "safe_title": lambda title: title,
+                "last_run": 0,
+            }
+            self.assertFalse(run_sync(str(root / "drive"), feed(), ledger, deps))
 
     def test_sync_leaves_a_file_that_is_already_on_the_headphones(self):
         with tempfile.TemporaryDirectory() as tmp:
