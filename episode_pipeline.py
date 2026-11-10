@@ -84,17 +84,25 @@ def _drive_relative(drive_root, drive_path):
         return path.as_posix()
 
 
-def _leave_on_headphones(episode, info, since, drive_path, replace, relative="", removed=()):
+def _pending_copy(entry):
+    """A slice finished after the last copy still has to go to the headphones."""
+    return bool(entry and entry.get("sliced") and entry.get("sliced_path") and not entry.get("copied_sliced"))
+
+
+def _leave_on_headphones(episode, info, since, drive_path, replace, relative="", removed=(), pending=False):
     """Skip a copy the headphones already settled.
 
     ``podcast_downloader_last_run.txt`` remembers the last finished run, so an
     episode from before that stays off the drive. ``podcast_downloader_removed.txt``
-    remembers a file the listener deleted. A file that is already there is left alone.
+    remembers a file the listener deleted. A file that is already there is left
+    alone unless a newer slice is waiting to replace it.
     """
     if replace:
         return None
     if relative and relative in removed:
         return "removed from headphones"
+    if pending:
+        return None
     if Path(drive_path).is_file():
         return "already on headphones"
     if info.get("force_latest"):
@@ -222,7 +230,14 @@ def _sync_one(podcast_name, info, episode, ledger, deps, since=0, replace=False)
     relative = _drive_relative(deps.get("drive_root"), drive_path)
     removed = {str(item) for item in deps.get("removed") or ()}
     reason = _leave_on_headphones(
-        episode, info, since, drive_path, replace, relative=relative, removed=removed,
+        episode,
+        info,
+        since,
+        drive_path,
+        replace,
+        relative=relative,
+        removed=removed,
+        pending=_pending_copy(entry),
     )
     if reason:
         print(f"\nSync: {podcast_name} — {title} [{reason}]")
