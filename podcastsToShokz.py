@@ -1,4 +1,5 @@
 import argparse
+import calendar
 import json
 import requests
 import os
@@ -121,26 +122,88 @@ def update_last_run_timestamp(usb_drive_base_dir):
 REMOVED_NAME = "podcast_downloader_removed.txt"
 
 
-def removed_episode_paths(drive_root):
+def _removed_cutoff(now):
+    """The instant three calendar months before ``now``."""
+    moment = datetime.fromtimestamp(int(now))
+    month = moment.month - 3
+    year = moment.year
+    while month < 1:
+        month += 12
+        year -= 1
+    day = min(moment.day, calendar.monthrange(year, month)[1])
+    return int(moment.replace(year=year, month=month, day=day).timestamp())
+
+
+def _parse_removed_line(line):
+    cleaned = line.strip().replace("\\", "/")
+    if not cleaned:
+        return None
+    stamp, separator, path = cleaned.partition(" ")
+    if separator and len(stamp) >= 10 and stamp.isdigit():
+        path = path.strip().lstrip("/")
+    else:
+        stamp = None
+        path = cleaned.lstrip("/")
+    if not path or path.startswith("../") or "/../" in f"/{path}/":
+        return None
+    return (int(stamp) if stamp is not None else None), path
+
+
+def _read_removed_entries(drive_root):
     path = Path(drive_root) / REMOVED_NAME
     try:
         lines = path.read_text().splitlines()
     except OSError:
-        return set()
-    return {line.strip().replace("\\", "/") for line in lines if line.strip()}
+        return []
+    entries = []
+    for line in lines:
+        parsed = _parse_removed_line(line)
+        if parsed:
+            entries.append(parsed)
+    return entries
 
 
-def remember_removed_episode(drive_root, relative):
-    """Remember a file the listener deleted so a later run does not copy it back."""
+def removed_episode_paths(drive_root, now=None):
+    now = int(time.time()) if now is None else int(now)
+    cutoff = _removed_cutoff(now)
+    kept = set()
+    for recorded, relative in _read_removed_entries(drive_root):
+        if recorded is not None and recorded < cutoff:
+            continue
+        kept.add(relative)
+    return kept
+
+
+def remember_removed_episode(drive_root, relative, now=None):
+    """Remember a file the listener deleted so a later run does not copy it back.
+
+    Each line is ``<epoch> <path>``. Adding a line drops entries older than
+    three months. A line written before timestamps existed is dated now.
+    """
     cleaned = str(relative or "").strip().replace("\\", "/").lstrip("/")
     if not cleaned or cleaned.startswith("../") or "/../" in f"/{cleaned}/":
         return
-    if cleaned in removed_episode_paths(drive_root):
-        return
+    now = int(time.time()) if now is None else int(now)
+    cutoff = _removed_cutoff(now)
+    kept = []
+    index_by_path = {}
+    for recorded, path in _read_removed_entries(drive_root):
+        if recorded is not None and recorded < cutoff:
+            continue
+        if path in index_by_path:
+            continue
+        index_by_path[path] = len(kept)
+        kept.append((now if recorded is None else recorded, path))
+    if cleaned in index_by_path:
+        kept[index_by_path[cleaned]] = (now, cleaned)
+    else:
+        kept.append((now, cleaned))
     path = Path(drive_root) / REMOVED_NAME
+    body = "".join(f"{stamp} {relative_path}\n" for stamp, relative_path in kept)
+    temporary = path.with_suffix(".tmp")
     try:
-        with path.open("a") as handle:
-            handle.write(cleaned + "\n")
+        temporary.write_text(body)
+        temporary.replace(path)
     except OSError as error:
         print(f"Warning: Could not record removed episode {cleaned}: {error}")
 

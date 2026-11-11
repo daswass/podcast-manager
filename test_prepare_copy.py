@@ -272,5 +272,55 @@ class CalibrateTrimTest(unittest.TestCase):
         self.assertEqual(saved["skip_last"], 10)
 
 
+class RemovedEpisodeListTest(unittest.TestCase):
+    def test_a_removal_records_when_it_happened(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            podcastsToShokz.remember_removed_episode(tmp, "News/Up First.mp3", now=1_700_000_000)
+            lines = (Path(tmp) / "podcast_downloader_removed.txt").read_text().splitlines()
+        self.assertEqual(lines, ["1700000000 News/Up First.mp3"])
+
+    def test_adding_a_removal_drops_entries_older_than_three_months(self):
+        now = 1_800_000_000
+        old = now - 100 * 24 * 60 * 60
+        recent = now - 80 * 24 * 60 * 60
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "podcast_downloader_removed.txt"
+            path.write_text(f"{old} News/Old.mp3\n{recent} News/Recent.mp3\n")
+            podcastsToShokz.remember_removed_episode(tmp, "News/New.mp3", now=now)
+            text = path.read_text()
+            kept = podcastsToShokz.removed_episode_paths(tmp, now=now)
+        self.assertNotIn("Old.mp3", text)
+        self.assertIn(f"{recent} News/Recent.mp3", text)
+        self.assertIn(f"{now} News/New.mp3", text)
+        self.assertEqual(kept, {"News/Recent.mp3", "News/New.mp3"})
+
+    def test_an_expired_entry_no_longer_blocks_a_copy(self):
+        now = 1_800_000_000
+        old = now - 100 * 24 * 60 * 60
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "podcast_downloader_removed.txt").write_text(f"{old} News/Old.mp3\n")
+            kept = podcastsToShokz.removed_episode_paths(tmp, now=now)
+        self.assertEqual(kept, set())
+
+    def test_a_line_without_a_time_is_dated_when_the_next_removal_is_added(self):
+        now = 1_800_000_000
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "podcast_downloader_removed.txt"
+            path.write_text("News/Legacy.mp3\n")
+            podcastsToShokz.remember_removed_episode(tmp, "News/New.mp3", now=now)
+            lines = path.read_text().splitlines()
+        self.assertEqual(lines, [
+            f"{now} News/Legacy.mp3",
+            f"{now} News/New.mp3",
+        ])
+
+    def test_deleting_the_same_file_again_starts_the_three_months_over(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            podcastsToShokz.remember_removed_episode(tmp, "News/Up First.mp3", now=1_700_000_000)
+            podcastsToShokz.remember_removed_episode(tmp, "News/Up First.mp3", now=1_700_000_100)
+            lines = (Path(tmp) / "podcast_downloader_removed.txt").read_text().splitlines()
+        self.assertEqual(lines, ["1700000100 News/Up First.mp3"])
+
+
 if __name__ == "__main__":
     unittest.main()

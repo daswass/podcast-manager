@@ -498,7 +498,10 @@ class ManagerApiTests(unittest.TestCase):
         self.assertFalse(episode.exists())
         self.assertFalse((self.drive / "News" / "._Up First.mp3").exists())
         removed = (self.drive / "podcast_downloader_removed.txt").read_text().splitlines()
-        self.assertEqual(removed, ["News/Up First.mp3"])
+        self.assertEqual(len(removed), 1)
+        stamp, path = removed[0].split(" ", 1)
+        self.assertTrue(stamp.isdigit() and len(stamp) >= 10)
+        self.assertEqual(path, "News/Up First.mp3")
         missing = self.client.request(
             "DELETE",
             "/api/headphones",
