@@ -178,8 +178,36 @@ class PrepareMainCopyTest(unittest.TestCase):
         copy.assert_called_once()
         self.assertEqual(copy.call_args.args[0][0][0], "Huberman Lab")
 
-    def test_nightly_prepare_does_not_copy(self):
-        copy = self._run(None)
+    def test_nightly_prepare_copies_when_the_headphones_are_connected(self):
+        feeds = [("Up First", {"id": 946759, "num_episodes": 1})]
+        with (
+            patch("podcastsToShokz.support_dir", return_value=Path("/tmp/podcast-manager-support")),
+            patch("podcastsToShokz.acquire_running_marker", return_value=True),
+            patch("podcastsToShokz.remove_running_marker"),
+            patch("podcastsToShokz.load_podcast_feeds", return_value=feeds),
+            patch("podcastsToShokz.EpisodeLedger"),
+            patch("podcastsToShokz.run_prepare"),
+            patch("podcastsToShokz.refresh_needs_copy"),
+            patch("podcastsToShokz.mounted_headphone_drive", return_value="/Volumes/SWIMBUDS/"),
+            patch("podcastsToShokz.os.path.exists", return_value=False),
+            patch("podcastsToShokz._run_podcast_update") as copy,
+        ):
+            podcastsToShokz.prepare_main(only_feed_id=None)
+        copy.assert_called_once_with("/Volumes/SWIMBUDS/")
+
+    def test_nightly_prepare_keeps_the_files_local_when_the_headphones_are_unplugged(self):
+        with (
+            patch("podcastsToShokz.support_dir", return_value=Path("/tmp/podcast-manager-support")),
+            patch("podcastsToShokz.acquire_running_marker", return_value=True),
+            patch("podcastsToShokz.remove_running_marker"),
+            patch("podcastsToShokz.load_podcast_feeds", return_value=[("Up First", {"id": 1})]),
+            patch("podcastsToShokz.EpisodeLedger"),
+            patch("podcastsToShokz.run_prepare"),
+            patch("podcastsToShokz.refresh_needs_copy"),
+            patch("podcastsToShokz.mounted_headphone_drive", return_value=None),
+            patch("podcastsToShokz._run_podcast_update") as copy,
+        ):
+            podcastsToShokz.prepare_main(only_feed_id=None)
         copy.assert_not_called()
 
     def test_cut_ads_marks_the_latest_episode_and_still_copies(self):

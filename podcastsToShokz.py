@@ -658,6 +658,24 @@ def mounted_headphone_drive():
     return None
 
 
+def copy_ready_episodes():
+    """Copy sliced episodes when the headphones are already connected.
+
+    The 4am prepare used to stop after writing the local files. A drive that
+    stayed plugged in overnight kept the earlier, uncut copy until morning.
+    """
+    drive = mounted_headphone_drive()
+    if drive is None:
+        print("Headphones are not plugged in, so the sliced episodes stay on this Mac.")
+        return
+    marker = running_marker_path(drive)
+    if os.path.exists(marker) and not running_marker_is_stale(marker):
+        print("Headphones are already being updated, so the sliced episodes were not copied.")
+        return
+    print(f"Copying sliced episodes to {drive}.")
+    _run_podcast_update(drive)
+
+
 def copy_prepared_show(feeds, ledger, support):
     name = feeds[0][0]
     drive = mounted_headphone_drive()
@@ -777,6 +795,7 @@ def prepare_main(only_feed_id=None, force_slice=False):
             prune_local_archive(ledger, support)
             refresh_needs_copy(ledger, support / "needs_copy")
         if only_feed_id is None:
+            copy_ready_episodes()
             print("Nightly prepare finished.")
         else:
             copy_prepared_show(feeds, ledger, support)

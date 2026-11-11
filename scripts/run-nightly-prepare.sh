@@ -1,6 +1,7 @@
 #!/bin/bash
 # Downloads, transcribes, and slices the latest episode of every show.
-# Does not need SWIMBUDS. launchd runs this at 4:00 AM local time.
+# Copies those files when the headphones are already plugged in.
+# launchd runs this at 4:00 AM local time.
 
 set -uo pipefail
 
