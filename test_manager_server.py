@@ -636,6 +636,32 @@ class ManagerApiTests(unittest.TestCase):
         _DRIVE_FILES_CACHE.clear()
         present = self.client.get("/api/library").json()
         self.assertIs(present["shows"][0]["on_headphones"], True)
+        self.assertEqual(present["shows"][0]["headphone_audio"], "trimmed")
+
+    def test_library_knows_when_the_headphone_file_is_the_ad_cut(self):
+        sliced = Path(self.tmp.name) / "sliced.mp3"
+        sliced.write_bytes(b"sliced-bytes")
+        self.feed_episodes[1] = {"Latest_Show": 5_000}
+        self.ledger.write_text(json.dumps({"episodes": {
+            "1:9": {
+                "feed_id": 1,
+                "title": "Latest_Show",
+                "published": 5_000,
+                "sliced": True,
+                "sliced_path": str(sliced),
+                "copied_sliced": True,
+            }
+        }}))
+        episode = self.drive / "News" / "Up First - Latest_Show.mp3"
+        episode.write_bytes(b"sliced-bytes")
+        _DRIVE_FILES_CACHE.clear()
+        match = self.client.get("/api/library").json()["shows"][0]
+        self.assertEqual(match["headphone_audio"], "sliced")
+        episode.write_bytes(b"trimmed-bytes")
+        _DRIVE_FILES_CACHE.clear()
+        stale = self.client.get("/api/library").json()["shows"][0]
+        self.assertIs(stale["on_headphones"], True)
+        self.assertEqual(stale["headphone_audio"], "trimmed")
 
     def test_library_uses_a_newer_ledger_title_than_the_feed(self):
         self.feed_episodes[1] = {"Feed_Story": 1_000}

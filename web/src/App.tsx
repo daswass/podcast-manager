@@ -27,6 +27,7 @@ import {
   type JobActivity,
   type Library,
   type SearchHit,
+  type HeadphoneAudio,
   type Show,
   type ShowStatus,
 } from "./api";
@@ -895,17 +896,9 @@ function ShowRow(props: {
         </div>
         {props.headphoneVolume && props.show.on_headphones !== null ? (
           <span
-            className={`status headphones ${props.show.on_headphones ? "on-headphones" : "off-headphones"}`}
-            title={
-              props.show.on_headphones
-                ? `The latest episode is on ${props.headphoneVolume}`
-                : `The latest episode is not on ${props.headphoneVolume}`
-            }
-            aria-label={
-              props.show.on_headphones
-                ? `The latest episode is on ${props.headphoneVolume}`
-                : `The latest episode is not on ${props.headphoneVolume}`
-            }
+            className={`status headphones ${headphoneClass(props.show.on_headphones, props.show.headphone_audio ?? null)}`}
+            title={headphoneTitle(props.headphoneVolume, props.show.on_headphones, props.show.headphone_audio ?? null)}
+            aria-label={headphoneTitle(props.headphoneVolume, props.show.on_headphones, props.show.headphone_audio ?? null)}
           >
             <HeadphonesMark />
           </span>
@@ -1852,6 +1845,37 @@ function adsDetail(kind: ArchiveEpisode["kind"]): string {
       return "This episode kept its ads.";
     default: {
       const unexpected: never = kind;
+      return unexpected;
+    }
+  }
+}
+
+function headphoneClass(onDrive: boolean, audio: HeadphoneAudio): string {
+  if (!onDrive) return "off-headphones";
+  switch (audio) {
+    case "trimmed":
+      return "on-headphones-raw";
+    case "sliced":
+    case null:
+      return "on-headphones";
+    default: {
+      const unexpected: never = audio;
+      return unexpected;
+    }
+  }
+}
+
+function headphoneTitle(volume: string, onDrive: boolean, audio: HeadphoneAudio): string {
+  if (!onDrive) return `The latest episode is not on ${volume}`;
+  switch (audio) {
+    case "sliced":
+      return `The ad-cut episode is on ${volume}`;
+    case "trimmed":
+      return `On ${volume}. This copy still has its ads.`;
+    case null:
+      return `The latest episode is on ${volume}`;
+    default: {
+      const unexpected: never = audio;
       return unexpected;
     }
   }

@@ -385,6 +385,7 @@ button.status.trimmed:hover:not(:disabled) { border-color: #e7b1a4; }
 }
 .status.headphones svg { width: 16px; height: 16px; }
 .status.on-headphones { color: #e6a15c; border-color: #6a4a28; }
+.status.on-headphones-raw { color: #e7b1a4; border-color: #6a4038; }
 .status.off-headphones { color: #5c5a54; border-color: #2c2d28; position: relative; }
 .status.off-headphones::after {
   content: "";

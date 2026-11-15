@@ -28,7 +28,7 @@ from ad_detect import (
 from ad_model import complete_ad_prompt
 from ad_slices import cut_ads, find_ad_spans
 from episode_ledger import EpisodeLedger, prune_local_archive, refresh_needs_copy, support_dir
-from episode_pipeline import run_prepare, run_sync
+from episode_pipeline import run_prepare, run_sync, _sync_one
 from library import LibraryError, feed_settings, load_library, save_library, update_show, version_of
 from whisper_transcribe import transcribe_episode
 
@@ -633,6 +633,10 @@ def _sync_dependencies(support, drive_root):
         "last_run": get_last_run_timestamp(drive_root),
         "removed": removed_episode_paths(drive_root),
         "safe_title": safe_episode_title,
+        "transcribe": transcribe_episode,
+        "load_chapters": load_episode_chapters,
+        "render_sliced": render_sliced_episode,
+        "record_timing": append_timing,
     }
 
 
@@ -719,6 +723,23 @@ def mounted_headphone_drive():
         if os.path.isdir(drive):
             return drive
     return None
+
+
+def copy_finished_slice(podcast_name, info, episode, ledger, support):
+    """Copy one sliced episode while prepare is still working through the other shows."""
+    drive = mounted_headphone_drive()
+    if drive is None:
+        return
+    marker = running_marker_path(drive)
+    if os.path.exists(marker) and not running_marker_is_stale(marker):
+        print(f"Headphones are already being updated, so {podcast_name} was not copied.")
+        return
+    title = episode.get("title") or "episode"
+    print(f"Copying {podcast_name} — {title} to {drive}.")
+    try:
+        _sync_one(podcast_name, info, episode, ledger, _sync_dependencies(support, drive))
+    finally:
+        refresh_needs_copy(ledger, support / "needs_copy")
 
 
 def copy_ready_episodes():
@@ -853,7 +874,11 @@ def prepare_main(only_feed_id=None, force_slice=False):
             else:
                 print(f"Preparing {feeds[0][0]}. Connected headphones get the episodes this show keeps.")
         try:
-            run_prepare(feeds, ledger, _prepare_dependencies(support))
+            dependencies = _prepare_dependencies(support)
+            dependencies["after_slice"] = (
+                lambda name, info, episode: copy_finished_slice(name, info, episode, ledger, support)
+            )
+            run_prepare(feeds, ledger, dependencies)
         finally:
             prune_local_archive(ledger, support)
             refresh_needs_copy(ledger, support / "needs_copy")

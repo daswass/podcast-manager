@@ -186,14 +186,18 @@ class PrepareMainCopyTest(unittest.TestCase):
             patch("podcastsToShokz.remove_running_marker"),
             patch("podcastsToShokz.load_podcast_feeds", return_value=feeds),
             patch("podcastsToShokz.EpisodeLedger"),
-            patch("podcastsToShokz.run_prepare"),
+            patch("podcastsToShokz.run_prepare") as prepare,
             patch("podcastsToShokz.refresh_needs_copy"),
             patch("podcastsToShokz.mounted_headphone_drive", return_value="/Volumes/SWIMBUDS/"),
             patch("podcastsToShokz.os.path.exists", return_value=False),
             patch("podcastsToShokz._run_podcast_update") as copy,
+            patch("podcastsToShokz.copy_finished_slice") as each,
         ):
             podcastsToShokz.prepare_main(only_feed_id=None)
+            callback = prepare.call_args.args[2]["after_slice"]
+            callback("Up First", feeds[0][1], {"id": 9, "title": "Morning"})
         copy.assert_called_once_with("/Volumes/SWIMBUDS/")
+        each.assert_called_once()
 
     def test_nightly_prepare_keeps_the_files_local_when_the_headphones_are_unplugged(self):
         with (

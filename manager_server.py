@@ -244,6 +244,15 @@ def create_app(
                 "url": metas[feed_id]["url"],
                 "posted": _latest_posted(feed_id, episodes, load_episodes),
                 "on_headphones": on_headphones,
+                "headphone_audio": _headphone_audio(
+                    effective_cut_ads(library, show),
+                    on_headphones,
+                    latest_file,
+                    headphone_files,
+                    episodes,
+                    feed_id,
+                    show["name"],
+                ),
             })
         job = _job_flags(jobs, marker_paths, drive_roots)
         return {
@@ -962,17 +971,17 @@ def _headphone_filenames(root):
 
 
 def _read_headphone_filenames(root):
-    names = set()
+    files = {}
     try:
         entries = list(root.iterdir())
     except OSError:
-        return names
+        return files
     for entry in entries:
         if entry.name.startswith(".") or entry.name == "System Volume Information":
             continue
         try:
             if entry.is_file():
-                _keep_audio_name(names, entry)
+                _keep_audio_name(files, entry)
                 continue
             if not entry.is_dir():
                 continue
@@ -980,11 +989,11 @@ def _read_headphone_filenames(root):
         except OSError:
             continue
         for child in children:
-            _keep_audio_name(names, child)
-    return names
+            _keep_audio_name(files, child)
+    return files
 
 
-def _keep_audio_name(names, path):
+def _keep_audio_name(files, path):
     try:
         is_file = path.is_file()
     except OSError:
@@ -993,7 +1002,44 @@ def _keep_audio_name(names, path):
         return
     if path.suffix.lower() not in AUDIO_SUFFIXES:
         return
-    names.add(path.name)
+    try:
+        files[path.name] = path.stat().st_size
+    except OSError:
+        return
+
+
+def _headphone_audio(cuts_ads, on_headphones, filename, files, episodes, feed_id, show_name):
+    """Whether the file on the drive is the ad-cut copy.
+
+    The trimmed and sliced files share a name, so the size is what tells them apart.
+    """
+    if not cuts_ads or not on_headphones or filename is None:
+        return None
+    size = files.get(filename)
+    if size is None:
+        return None
+    prefix = f"{int(feed_id)}:"
+    for key, entry in episodes.items():
+        same_key = str(key).startswith(prefix)
+        try:
+            same_feed = int(entry.get("feed_id")) == int(feed_id)
+        except (TypeError, ValueError):
+            same_feed = False
+        if not same_key and not same_feed:
+            continue
+        title = entry.get("title") or ""
+        if episode_filename(show_name, {"title": title}) != filename:
+            continue
+        sliced = entry.get("sliced_path")
+        if not sliced:
+            return "trimmed"
+        try:
+            if Path(sliced).is_file() and Path(sliced).stat().st_size == size:
+                return "sliced"
+        except OSError:
+            continue
+        return "trimmed"
+    return "trimmed"
 
 
 def _latest_episode_filename(show_name, feed_id, ledger_episodes, load_episodes):

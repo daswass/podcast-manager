@@ -4,8 +4,8 @@ Downloads the latest episode of each show, removes sponsor reads from spoken sho
 
 Two jobs do this:
 
-- **4:00 AM prepare** does not need the headphones. It downloads shows that cut ads, transcribes them, and cuts sponsor reads. Shows with cut ads turned off are downloaded and trimmed only.
-- **Copy** runs when the headphones mount, and again at 6:40 AM if they are still mounted. It copies files that prepare already finished. A show that published a newer episode after 4:00 AM is downloaded then and given its fixed trim.
+- **4:00 AM prepare** does not need the headphones. It downloads shows that cut ads, transcribes them, and cuts sponsor reads. Each finished slice is copied then, when the headphones are already plugged in. Shows with cut ads turned off are downloaded and trimmed only.
+- **Copy** runs when the headphones mount, and again at 6:40 AM if they are still mounted. It copies files that prepare already finished. A show that published a newer episode after its prepare check is sliced before that copy. A show with cut ads turned off keeps its fixed trim.
 
 OpenSwim is used when both drives are mounted.
 

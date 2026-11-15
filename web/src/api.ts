@@ -1,5 +1,7 @@
 export type ShowStatus = "preparing" | "measuring" | "sliced" | "trimmed" | "not_prepared";
 
+export type HeadphoneAudio = "sliced" | "trimmed" | null;
+
 export type Folder = {
   name: string;
   cut_ads: boolean;
@@ -22,6 +24,7 @@ export type Show = {
   url: string | null;
   posted: number | null;
   on_headphones: boolean | null;
+  headphone_audio: HeadphoneAudio;
 };
 
 export type JobActivity = "downloading" | "measuring" | "copying" | "both" | "running" | null;

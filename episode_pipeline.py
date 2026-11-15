@@ -84,6 +84,13 @@ def _drive_relative(drive_root, drive_path):
         return path.as_posix()
 
 
+def _needs_ad_slice(info, entry):
+    """Spoken shows are sliced before a copy. Music keeps the fixed trim."""
+    if info.get("slice") is False:
+        return False
+    return not (entry and entry.get("sliced") and entry.get("sliced_path"))
+
+
 def _pending_copy(entry):
     """A slice finished after the last copy still has to go to the headphones."""
     return bool(entry and entry.get("sliced") and entry.get("sliced_path") and not entry.get("copied_sliced"))
@@ -218,6 +225,9 @@ def _prepare_one(podcast_name, info, episode, ledger, deps):
         "slice_seconds": round(slice_seconds, 3),
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     })
+    after_slice = deps.get("after_slice")
+    if after_slice:
+        after_slice(podcast_name, info, episode)
 
 
 def _sync_one(podcast_name, info, episode, ledger, deps, since=0, replace=False):
@@ -229,6 +239,29 @@ def _sync_one(podcast_name, info, episode, ledger, deps, since=0, replace=False)
     drive_path = deps["drive_path"](info, episode)
     relative = _drive_relative(deps.get("drive_root"), drive_path)
     removed = {str(item) for item in deps.get("removed") or ()}
+    if _needs_ad_slice(info, entry):
+        blocked = _leave_on_headphones(
+            episode,
+            info,
+            since,
+            drive_path,
+            replace,
+            relative=relative,
+            removed=removed,
+            pending=False,
+        )
+        # A file already on the drive is upgraded. One the listener removed,
+        # or one that predates the last run and is not on the drive, stays off.
+        if blocked == "removed from headphones" or (
+            blocked == "published before the last headphone run" and not Path(drive_path).is_file()
+        ):
+            print(f"\nSync: {podcast_name} — {title} [{blocked}]")
+            return
+        _prepare_one(podcast_name, info, episode, ledger, deps)
+        entry = _without_missing_files(ledger.get(info["id"], episode_id))
+        if _needs_ad_slice(info, entry):
+            print(f"\nSync: {podcast_name} — {title} [slice did not finish, left off the headphones]")
+            return
     reason = _leave_on_headphones(
         episode,
         info,
