@@ -62,7 +62,7 @@ Local files older than two weeks are removed when a prepare or copy runs, and wh
 
 Spoken shows use publisher chapters whose titles are ads, sponsors, or promos, plus a local model (`mlx-community/Qwen2.5-7B-Instruct-4bit`) over a Whisper transcript (`mlx-community/whisper-large-v3-turbo`). The model marks the lines that belong to each sponsor read. A short phrase list is used only when the model does not run.
 
-An edge can snap a few seconds to a nearby silence. When any sponsor span is found, the fixed start/end trim below is not applied a second time. Playback speed still is. A show with cut ads off never takes this path.
+An edge can snap a few seconds to a nearby silence. When any sponsor span is found, the fixed start/end trim below is not applied a second time. Playback speed still is. A show with cut ads off never takes this path. Every finished file starts with a spoken folder, show, and episode title, so a player with no screen can say what began.
 
 Acast refuses Python’s default client. Downloads send `User-Agent: podcast-manager`.
 

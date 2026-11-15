@@ -144,6 +144,7 @@ class PipelineTest(unittest.TestCase):
 
             def render_trimmed(info, source, dest):
                 calls["trim"] += 1
+                calls["info"] = info
                 Path(dest).parent.mkdir(parents=True, exist_ok=True)
                 Path(dest).write_bytes(b"trimmed")
 
@@ -166,6 +167,9 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(calls["download"], 1)
             self.assertEqual(calls["transcribe"], 0)
             self.assertEqual(calls["trim"], 1)
+            self.assertEqual(calls["info"]["category"], "Music")
+            self.assertEqual(calls["info"]["podcast_name"], "Heldeep Radio")
+            self.assertEqual(calls["info"]["episode_title"], "Episode")
             stored = ledger.get(10, 7)
             self.assertFalse(stored["sliced"])
             self.assertEqual(stored["trimmed_path"], str(root / "trimmed.mp3"))

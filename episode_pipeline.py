@@ -160,6 +160,7 @@ def _prepare_one(podcast_name, info, episode, ledger, deps):
     entry = _without_missing_files(ledger.get(info["id"], episode_id))
     plan = prepare_plan(entry, info)
     title = episode.get("title") or "episode"
+    info["episode_title"] = title
     print(f"\nPrepare: {podcast_name} — {title} [{plan}]")
     if plan == "skip":
         return
@@ -236,6 +237,7 @@ def _sync_one(podcast_name, info, episode, ledger, deps, since=0, replace=False)
     info["podcast_name"] = podcast_name
     entry = _without_missing_files(ledger.get(info["id"], episode_id))
     title = episode.get("title") or "episode"
+    info["episode_title"] = title
     drive_path = deps["drive_path"](info, episode)
     relative = _drive_relative(deps.get("drive_root"), drive_path)
     removed = {str(item) for item in deps.get("removed") or ()}

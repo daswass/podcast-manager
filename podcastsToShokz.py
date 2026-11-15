@@ -3,6 +3,7 @@ import calendar
 import json
 import requests
 import os
+import subprocess
 import tempfile
 import unicodedata
 from pathlib import Path
@@ -378,6 +379,97 @@ def playback_filters(playback_speed, cut):
     return ",".join(filters)
 
 
+IDENT_PAUSE_SECONDS = 0.7
+IDENT_VOICE = "Samantha"
+
+
+def ident_phrase(folder, show, title):
+    """What OpenSwim hears before the episode, because the player has no screen."""
+    parts = []
+    for part in (folder, show, title):
+        cleaned = " ".join(str(part or "").split()).rstrip(".")
+        if cleaned:
+            parts.append(cleaned)
+    if not parts:
+        return ""
+    return ". ".join(parts) + "."
+
+
+def speak_ident(phrase, dest):
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["say", "-v", IDENT_VOICE, "-o", str(dest), phrase],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _audio_layout(path):
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "a:0",
+                "-show_entries", "stream=sample_rate,channels",
+                "-of", "json", str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        stream = json.loads(result.stdout)["streams"][0]
+        return int(stream["sample_rate"]), int(stream["channels"])
+    except (OSError, subprocess.CalledProcessError, KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+        return 44100, 2
+
+
+def prepend_ident(info, episode_path, speak=None):
+    """Put a spoken folder, show, and title on the front of a finished episode."""
+    phrase = ident_phrase(info.get("category"), info.get("podcast_name"), info.get("episode_title"))
+    if not phrase:
+        return
+    path = Path(episode_path)
+    if not path.is_file():
+        return
+    speak = speak or speak_ident
+    print(f"\tSpeaking the ident: {phrase}")
+    rate, channels = _audio_layout(path)
+    layout = "mono" if channels <= 1 else "stereo"
+    with tempfile.TemporaryDirectory() as tmp:
+        spoken = Path(tmp) / "ident.aiff"
+        speak(phrase, spoken)
+        if not spoken.is_file():
+            raise RuntimeError("the ident voice did not write a file")
+        joined = Path(tmp) / "joined.mp3"
+        filter_complex = (
+            f"[0:a]{LOUDNESS_FILTER},apad=pad_dur={IDENT_PAUSE_SECONDS},"
+            f"aresample={rate},aformat=channel_layouts={layout}[intro];"
+            f"[1:a]aresample={rate},aformat=channel_layouts={layout}[show];"
+            "[intro][show]concat=n=2:v=0:a=1[out]"
+        )
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-i", str(spoken),
+                "-i", str(path),
+                "-filter_complex", filter_complex,
+                "-map", "[out]",
+                "-codec:a", "libmp3lame", "-q:a", "2",
+                str(joined),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        os.replace(joined, path)
+
+
+def _finish_with_ident(info, dest):
+    try:
+        prepend_ident(info, dest)
+    except Exception as error:
+        print(f"\tIdent was not added: {error}")
+
+
 def export_mp3(segment, path, filters=""):
     arguments = {"format": "mp3"}
     if filters:
@@ -579,6 +671,7 @@ def render_sliced_episode(info, source_path, dest_path, segments, trace=None):
         print("\tNo ad spans found; using the saved speed")
         shutil.copy(source_path, dest)
         process_audio(info, str(dest), apply_trim=False, cut=False)
+    _finish_with_ident(info, dest)
     return audio_seconds
 
 
@@ -587,6 +680,7 @@ def render_trimmed_episode(info, source_path, dest_path):
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(source_path, dest)
     process_audio(info, str(dest), apply_trim=True)
+    _finish_with_ident(info, dest)
 
 
 def copy_to_drive(src, dst):
