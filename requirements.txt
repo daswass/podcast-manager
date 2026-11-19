@@ -3,6 +3,7 @@ charset-normalizer==3.3.2
 idna==3.6
 numpy>=2.2.3
 pydub==0.25.1
+piper-tts==1.8.0
 pytz==2023.4
 requests==2.31.0
 sgmllib3k==1.0.0

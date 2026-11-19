@@ -13,7 +13,10 @@ from datetime import datetime
 import shutil
 import glob
 import re
+import wave
 import pytz
+from piper import PiperVoice
+from piper.download_voices import download_voice
 
 from ad_detect import (
     chapter_spans,
@@ -380,7 +383,20 @@ def playback_filters(playback_speed, cut):
 
 
 IDENT_PAUSE_SECONDS = 0.7
-IDENT_VOICE = "Samantha"
+# Lessac high is the English Piper voice guides treat as the most natural.
+IDENT_VOICE = "en_US-lessac-high"
+_PIPER_VOICE = None
+
+
+def piper_model_dir():
+    return Path.home() / ".cache" / "podcast-manager" / "piper"
+
+
+def piper_model_path():
+    directory = piper_model_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    download_voice(IDENT_VOICE, directory)
+    return directory / f"{IDENT_VOICE}.onnx"
 
 
 def ident_phrase(folder, show, title):
@@ -396,13 +412,13 @@ def ident_phrase(folder, show, title):
 
 
 def speak_ident(phrase, dest):
+    global _PIPER_VOICE
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["say", "-v", IDENT_VOICE, "-o", str(dest), phrase],
-        check=True,
-        capture_output=True,
-    )
+    if _PIPER_VOICE is None:
+        _PIPER_VOICE = PiperVoice.load(piper_model_path())
+    with wave.open(str(dest), "wb") as wav_file:
+        _PIPER_VOICE.synthesize_wav(phrase, wav_file)
 
 
 def _audio_layout(path):
@@ -436,7 +452,7 @@ def prepend_ident(info, episode_path, speak=None):
     rate, channels = _audio_layout(path)
     layout = "mono" if channels <= 1 else "stereo"
     with tempfile.TemporaryDirectory() as tmp:
-        spoken = Path(tmp) / "ident.aiff"
+        spoken = Path(tmp) / "ident.wav"
         speak(phrase, spoken)
         if not spoken.is_file():
             raise RuntimeError("the ident voice did not write a file")

@@ -66,6 +66,29 @@ class IdentTest(unittest.TestCase):
     def test_ident_skips_a_blank_part(self):
         self.assertEqual(podcastsToShokz.ident_phrase("Music", "Heldeep Radio", ""), "Music. Heldeep Radio.")
 
+    def test_speak_ident_uses_the_lessac_high_piper_voice(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "ident.wav"
+            with patch("podcastsToShokz.PiperVoice", create=True) as voice_cls, patch(
+                "podcastsToShokz.piper_model_path",
+                create=True,
+                return_value=Path("en_US-lessac-high.onnx"),
+            ):
+                voice = voice_cls.load.return_value
+
+                def synthesize(text, wav_file):
+                    wav_file.setnchannels(1)
+                    wav_file.setsampwidth(2)
+                    wav_file.setframerate(22050)
+                    wav_file.writeframes(b"\x00\x00" * 220)
+
+                voice.synthesize_wav.side_effect = synthesize
+                podcastsToShokz.speak_ident("News. Up First.", dest)
+            loaded = Path(str(voice_cls.load.call_args.args[0])).name
+            self.assertEqual(loaded, "en_US-lessac-high.onnx")
+            self.assertEqual(voice.synthesize_wav.call_args.args[0], "News. Up First.")
+            self.assertGreater(dest.stat().st_size, 0)
+
     def test_prepend_puts_the_spoken_ident_ahead_of_the_episode(self):
         with tempfile.TemporaryDirectory() as tmp:
             episode = Path(tmp) / "episode.mp3"
