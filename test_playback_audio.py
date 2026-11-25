@@ -7,8 +7,21 @@ from pydub.generators import Sine
 
 from pydub import AudioSegment
 
-from podcastsToShokz import playback_filters, process_audio
+from ad_detect import HeldSpans
+from podcastsToShokz import playback_filters, process_audio, settle_detected_spans
 import podcastsToShokz
+
+
+class HeldEdgeTest(unittest.TestCase):
+    def test_a_salvaged_span_does_not_grow_into_the_next_spot(self):
+        segments = [
+            {"start": 0, "end": 20, "text": "For your consideration. Possible Love is a heart-stopping stunner."},
+            {"start": 21, "end": 55, "text": "Visit acme.com for a year of better sleep."},
+        ]
+        held = settle_detected_spans(segments, [(0, 20)], HeldSpans([(0, 20)]))
+        walked = settle_detected_spans(segments, [(0, 20)], [(0, 20)])
+        self.assertFalse(any(start <= 30 < end for start, end in held))
+        self.assertTrue(any(start <= 30 < end for start, end in walked))
 
 
 class PlaybackFilterTest(unittest.TestCase):

@@ -12,6 +12,8 @@ _AD_CHAPTER = re.compile(
 
 MAX_MODEL_SPAN_SECONDS = 240
 MAX_AD_FRACTION = 1 / 3
+# Among the four verifier labels, this is "sure this is a paid ad."
+SURE_AD_PROBABILITY = 0.8
 WINDOW_SECONDS = 600
 OVERLAP_SECONDS = 180
 EDGE_WINDOW_SECONDS = 45
@@ -96,6 +98,72 @@ _DOMAIN_SPONSOR = re.compile(
 )
 
 
+class ModelReply:
+    """One model completion. confidence is P(paid_ad) among the four verifier labels."""
+
+    def __init__(self, text, confidence=None):
+        self.text = "" if text is None else str(text)
+        self.confidence = confidence
+
+
+class HeldSpans(list):
+    """Cuts that must keep the edges the model was sure about."""
+
+    hold_edges = True
+
+
+def _as_reply(raw):
+    if isinstance(raw, ModelReply):
+        return raw
+    return ModelReply(raw)
+
+
+def _complete(complete, prompt):
+    return _as_reply(complete(prompt))
+
+
+def renormalized_label_probabilities(logprobs_by_label):
+    """Turn first-token log probabilities into a distribution over the four labels."""
+    if not logprobs_by_label:
+        return None
+    if any(label not in logprobs_by_label for label in _VERIFIER_LABELS):
+        return None
+    peak = max(float(logprobs_by_label[label]) for label in _VERIFIER_LABELS)
+    weights = {
+        label: math.exp(float(logprobs_by_label[label]) - peak)
+        for label in _VERIFIER_LABELS
+    }
+    total = sum(weights.values())
+    if total <= 0:
+        return None
+    return {label: weight / total for label, weight in weights.items()}
+
+
+_CLASSIFICATION_OPEN = re.compile(r'"classification"\s*:\s*"$')
+
+
+def paid_ad_confidence_from_chunks(chunks):
+    """Read P(paid_ad) from the token that begins the classification label.
+
+    chunks are (decoded piece, {label: logprob}) in generation order. The
+    useful distribution is the one on the first token after the opening quote,
+    which is the same generation the text came from.
+    """
+    text = ""
+    waiting = False
+    for piece, row in chunks:
+        piece = piece or ""
+        text += piece
+        if waiting and piece.strip():
+            probabilities = renormalized_label_probabilities(row)
+            if probabilities is None:
+                return None
+            return probabilities["paid_ad"]
+        if _CLASSIFICATION_OPEN.search(text):
+            waiting = True
+    return None
+
+
 def chapter_spans(chapters, duration):
     ordered = []
     for chapter in chapters or []:
@@ -173,6 +241,9 @@ def build_ad_prompt(window):
         '"quote": "<exact words copied from the transcript>"}]}\n'
         "This is candidate discovery: enumerate every possible paid sponsor read or produced commercial; "
         "a later verifier will reject false positives. Keep adjacent advertisers as separate entries.\n"
+        "A produced underwriting read, a film spot that says it is for your consideration, a short branded "
+        "preroll before the host says hello, and a commercial pod after the host says goodbye are ads, "
+        "even when the spot never says the word sponsor.\n"
         "Do not combine a paid ad with a different sponsor, network/show cross-promo, editorial/news discussion, "
         "host credits, guest credits, subscription/newsletter/social prompts, or a show outro. "
         "A sponsor name in credits or an editorial discussion of advertising is not itself a paid ad.\n"
@@ -191,6 +262,10 @@ def build_verifier_prompt(window, candidate):
         "host's delivery matches the interview. A produced commercial may begin with a consumer problem, "
         "including at timestamp zero, and identify the advertiser only later through its product, URL, offer, "
         "or legal disclaimer. Classify that complete candidate as paid_ad. "
+        "The same label applies to a produced underwriting read, a for-your-consideration film spot, "
+        "a branded preroll, and a commercial that plays after the host says goodbye, even when the spot "
+        "never says the word sponsor. Label each of those produced commercials paid_ad. Do not call them "
+        "house_promo or credits_or_outro. "
         "house_promo includes another show/network/Acast cross-promo, subscriptions, newsletters, events, "
         "or the podcast's own products. editorial includes news/reporting/interview discussion, even when it "
         "mentions brands or advertising. credits_or_outro includes host/guest/production credits, recaps, "
@@ -368,7 +443,8 @@ def classify_transcript(segments, duration, complete):
         + _branded_preroll_candidates(segments)
     )
     for window in candidate_windows(segments):
-        discovered.extend(parse_ad_candidates(complete(build_ad_prompt(window)), window))
+        reply = _complete(complete, build_ad_prompt(window))
+        discovered.extend(parse_ad_candidates(reply.text, window))
     candidates = _merge_discovery_candidates(discovered)
     verified = []
     for candidate in candidates:
@@ -376,13 +452,20 @@ def classify_transcript(segments, duration, complete):
         candidate_text = _candidate_span_text(context, candidate["start"], candidate["end"])
         if _OBVIOUS_HOUSE_PROMO.search(candidate_text):
             continue
-        verifier_response = complete(build_verifier_prompt(context, candidate))
+        reply = _complete(complete, build_verifier_prompt(context, candidate))
         result = parse_verified_candidate(
-            verifier_response,
+            reply.text,
             context,
             candidate,
         )
-        if result is not None and not _verified_paid_has_commercial_grounding(context, candidate):
+        if result is not None:
+            result["confidence"] = reply.confidence
+        sure = (
+            result is not None
+            and result.get("confidence") is not None
+            and result["confidence"] >= SURE_AD_PROBABILITY
+        )
+        if result is not None and not sure and not _verified_paid_has_commercial_grounding(context, candidate):
             # A produced spot often names the product first and saves the URL
             # for the disclaimer. Keep the spot when that URL is the same sponsor.
             extended = _extend_verified_to_sponsor_cta(segments, result)
@@ -395,11 +478,11 @@ def classify_transcript(segments, duration, complete):
         if result is not None:
             verified.append(result)
     verified = _merge_verified_candidates(verified)
-    seeds = [(candidate["start"], candidate["end"]) for candidate in verified]
-    bounded = []
+    tagged = []
     for candidate in verified:
-        bounded.extend(
-            _trim_after_commercial_close(
+        confidence = candidate.get("confidence")
+        for span in _bound_candidate(segments, candidate, verified, complete):
+            settled = _trim_after_commercial_close(
                 segments,
                 _cover_sponsor_pitch(
                     segments,
@@ -407,13 +490,30 @@ def classify_transcript(segments, duration, complete):
                     _expand_explicit_sponsor_read(segments, candidate, span),
                 ),
             )
-            for span in _bound_candidate(segments, candidate, verified, complete)
-        )
-    merged = cover_neighboring_spots(segments, merge_spans(bounded))
-    merged = [_finish_break(segments, span) for span in merged]
-    merged = merge_spans(merged)
+            tagged.append((settled[0], settled[1], confidence))
+
+    def _settle(spans):
+        settled = cover_neighboring_spots(segments, merge_spans(spans))
+        return merge_spans([_finish_break(segments, span) for span in settled])
+
+    merged = _settle([(start, end) for start, end, _confidence in tagged])
     covered = sum(end - start for start, end in merged)
     if duration > 0 and covered > duration * MAX_AD_FRACTION:
+        sure_spans = [
+            (start, end)
+            for start, end, confidence in tagged
+            if confidence is not None and confidence >= SURE_AD_PROBABILITY
+        ]
+        # Finish each sure span on its own. The neighbor walk would pull in
+        # the next spot, including one this pass was not sure about.
+        salvaged = merge_spans(_finish_break(segments, span) for span in sure_spans)
+        if salvaged:
+            salvaged_seconds = sum(end - start for start, end in salvaged)
+            print(
+                f"\tAd model marked {covered:.0f}s of {duration:.0f}s; "
+                f"keeping {salvaged_seconds:.0f}s it is sure about"
+            )
+            return HeldSpans(salvaged)
         print(
             f"\tAd model marked {covered:.0f}s of {duration:.0f}s; ignoring that pass"
         )
@@ -896,14 +996,33 @@ def _merge_discovery_candidates(candidates):
     return merged
 
 
+def _is_sure_candidate(candidate):
+    confidence = candidate.get("confidence")
+    return confidence is not None and confidence >= SURE_AD_PROBABILITY
+
+
 def _merge_verified_candidates(candidates):
     merged = []
     for candidate in sorted(candidates, key=lambda item: (item["start"], item["end"])):
-        if merged and _same_sponsor(candidate["sponsor_key"], merged[-1]["sponsor_key"]) and (
-            candidate["start"] <= merged[-1]["end"] + 1
-        ):
+        same_spot = (
+            merged
+            and _same_sponsor(candidate["sponsor_key"], merged[-1]["sponsor_key"])
+            and candidate["start"] <= merged[-1]["end"] + 1
+            and _is_sure_candidate(candidate) == _is_sure_candidate(merged[-1])
+        )
+        if same_spot:
             merged[-1]["start"] = min(merged[-1]["start"], candidate["start"])
             merged[-1]["end"] = max(merged[-1]["end"], candidate["end"])
+            # A union is only as sure as its less sure part.
+            known = [
+                value for value in (
+                    merged[-1].get("confidence"),
+                    candidate.get("confidence"),
+                )
+                if value is not None
+            ]
+            if known:
+                merged[-1]["confidence"] = min(known)
             continue
         merged.append(dict(candidate))
     return merged
@@ -1184,6 +1303,7 @@ def measure_trim(episodes):
     }
 
 
+
 def choose_cut_spans(phrase_spans, model_spans, chapter_spans):
     chapters = merge_spans(chapter_spans)
     if model_spans is None:
@@ -1282,7 +1402,7 @@ def _locate_start(segments, candidate, seeds, complete):
     wide = _segments_between(segments, float(anchor["start"]) - 110, float(anchor["end"]) + 12)
     narrow_seg = _chosen_grounded_segment(
         narrow,
-        complete(build_narrow_start_prompt(narrow, candidate["sponsor"], candidate["evidence"])),
+        _complete(complete, build_narrow_start_prompt(narrow, candidate["sponsor"], candidate["evidence"])).text,
         "start_line",
         candidate["sponsor"],
     ) if narrow else None
@@ -1291,9 +1411,9 @@ def _locate_start(segments, candidate, seeds, complete):
     if wide and anchor_line is not None:
         wide_seg = _chosen_grounded_segment(
             wide,
-            complete(build_wide_start_prompt(
+            _complete(complete, build_wide_start_prompt(
                 wide, anchor_line, candidate["sponsor"], candidate["evidence"]
-            )),
+            )).text,
             "start_line",
             candidate["sponsor"],
         )
@@ -1359,7 +1479,7 @@ def _locate_end(segments, start, candidate, complete):
         return None
     chosen = _chosen_grounded_segment(
         window,
-        complete(build_end_prompt(window, candidate["sponsor"], candidate["evidence"])),
+        _complete(complete, build_end_prompt(window, candidate["sponsor"], candidate["evidence"])).text,
         "end_line",
         candidate["sponsor"],
     )
@@ -1376,7 +1496,7 @@ def _extend_closing(segments, end, candidate, complete):
             return end
         chosen = _chosen_grounded_segment(
             window,
-            complete(build_end_prompt(window, candidate["sponsor"], candidate["evidence"])),
+            _complete(complete, build_end_prompt(window, candidate["sponsor"], candidate["evidence"])).text,
             "end_line",
             candidate["sponsor"],
         )

@@ -7,8 +7,6 @@ _AD_STARTS = (
     "brought to you by",
     "sponsored by",
     "a quick word from",
-    "we'll be right back",
-    "we will be right back",
     "thanks to our sponsor",
     "promo code",
     "use code",

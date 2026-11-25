@@ -14,8 +14,11 @@ from ad_detect import (
     classify_transcript,
     cover_neighboring_spots,
     measure_trim,
+    ModelReply,
+    paid_ad_confidence_from_chunks,
     parse_model_spans,
     parse_verified_candidate,
+    renormalized_label_probabilities,
     tighten_spans,
     transcript_windows,
     with_show_trim,
@@ -1071,6 +1074,201 @@ class MeasureTrimTest(unittest.TestCase):
             {"duration": 100, "spans": [(40, 70)]},
         ]
         self.assertEqual(measure_trim(episodes), {"skip_first": 0, "skip_last": 0})
+
+
+def _covers(spans, second):
+    return any(start <= second < end for start, end in spans)
+
+
+class SureAdTest(unittest.TestCase):
+    def test_label_probabilities_are_renormalized_over_the_four_labels(self):
+        probabilities = renormalized_label_probabilities({
+            "paid_ad": -0.2,
+            "house_promo": -4.0,
+            "editorial": -4.0,
+            "credits_or_outro": -4.0,
+        })
+        self.assertGreater(probabilities["paid_ad"], 0.8)
+        self.assertAlmostEqual(sum(probabilities.values()), 1.0)
+
+    def test_confidence_is_read_from_the_token_after_the_classification_quote(self):
+        sure = {"paid_ad": -0.1, "house_promo": -5, "editorial": -5, "credits_or_outro": -5}
+        unsure = {"paid_ad": -2.0, "house_promo": -0.2, "editorial": -3, "credits_or_outro": -3}
+        confidence = paid_ad_confidence_from_chunks([
+            ('{"classification": ', None),
+            ('"', None),
+            ("paid", sure),
+            ("_ad", unsure),
+            ('", "sponsor": "Possible Love"}', None),
+        ])
+        self.assertGreater(confidence, 0.8)
+
+    def test_a_sure_produced_commercial_is_cut_without_a_sponsor_keyword(self):
+        segments = [
+            {"start": 0, "end": 20, "text": "For your consideration. Possible Love is a heart-stopping stunner."},
+            {"start": 20, "end": 40, "text": "So I want to talk about what the reinstatement means today."},
+        ]
+
+        def complete(prompt):
+            if "Classify one candidate" in prompt:
+                if "discovery quote: for your consideration" in prompt:
+                    return ModelReply(json.dumps({
+                        "classification": "paid_ad",
+                        "sponsor": "Possible Love",
+                        "evidence_quote": "For your consideration",
+                    }), 0.96)
+                return json.dumps({
+                    "classification": "editorial",
+                    "sponsor": "",
+                    "evidence_quote": "reinstatement means",
+                })
+            if "candidate discovery" in prompt:
+                return _response([{"start": 0, "end": 20, "quote": "For your consideration"}])
+            return "{}"
+
+        spans = classify_transcript(segments, 400, complete)
+        self.assertTrue(_covers(spans, 5))
+        self.assertFalse(_covers(spans, 30))
+
+    def test_the_same_commercial_is_kept_out_when_the_model_is_not_sure(self):
+        segments = [
+            {"start": 0, "end": 20, "text": "For your consideration. Possible Love is a heart-stopping stunner."},
+            {"start": 20, "end": 40, "text": "So I want to talk about what the reinstatement means today."},
+        ]
+
+        def complete(prompt):
+            if "Classify one candidate" in prompt:
+                if "discovery quote: for your consideration" in prompt:
+                    return json.dumps({
+                        "classification": "paid_ad",
+                        "sponsor": "Possible Love",
+                        "evidence_quote": "For your consideration",
+                    })
+                return json.dumps({
+                    "classification": "editorial",
+                    "sponsor": "",
+                    "evidence_quote": "reinstatement means",
+                })
+            if "candidate discovery" in prompt:
+                return _response([{"start": 0, "end": 20, "quote": "For your consideration"}])
+            return "{}"
+
+        self.assertEqual(classify_transcript(segments, 400, complete), [])
+
+    def test_an_oversized_pass_keeps_only_the_spots_the_model_is_sure_about(self):
+        segments = [
+            {"start": 0, "end": 45, "text": "This episode is sponsored by Acme mats today"},
+            {"start": 45, "end": 70, "text": "Welcome back to the interview about sleep"},
+            {"start": 70, "end": 90, "text": "For your consideration. Possible Love is a heart-stopping stunner."},
+            {"start": 90, "end": 150, "text": "The interview resumes with Jensen and what the reinstatement means."},
+        ]
+
+        def complete(prompt):
+            if "Classify one candidate" in prompt:
+                if "discovery quote: for your consideration" in prompt:
+                    return ModelReply(json.dumps({
+                        "classification": "paid_ad",
+                        "sponsor": "Possible Love",
+                        "evidence_quote": "For your consideration",
+                    }), 0.96)
+                if "discovery quote: sponsored by Acme mats" in prompt:
+                    return ModelReply(json.dumps({
+                        "classification": "paid_ad",
+                        "sponsor": "Acme",
+                        "evidence_quote": "sponsored by Acme mats",
+                    }), 0.2)
+                return json.dumps({
+                    "classification": "editorial",
+                    "sponsor": "",
+                    "evidence_quote": "interview about sleep",
+                })
+            if "candidate discovery" in prompt:
+                return _response([
+                    {"start": 0, "end": 45, "quote": "sponsored by Acme mats"},
+                    {"start": 70, "end": 90, "quote": "For your consideration"},
+                ])
+            return "{}"
+
+        spans = classify_transcript(segments, 150, complete)
+        self.assertTrue(_covers(spans, 75))
+        self.assertFalse(_covers(spans, 10))
+        self.assertFalse(_covers(spans, 55))
+        self.assertFalse(_covers(spans, 100))
+
+    def test_a_sure_spot_does_not_lend_its_probability_to_an_overlapping_read(self):
+        segments = [
+            {"start": 0, "end": 20, "text": "For your consideration. Possible Love is a heart-stopping stunner."},
+            {"start": 20, "end": 150, "text": "This episode is sponsored by Possible Love and then the interview continues."},
+        ]
+
+        def complete(prompt):
+            if "Classify one candidate" in prompt:
+                if "discovery quote: for your consideration" in prompt:
+                    return ModelReply(json.dumps({
+                        "classification": "paid_ad",
+                        "sponsor": "Possible Love",
+                        "evidence_quote": "For your consideration",
+                    }), 0.96)
+                if "discovery quote: the interview continues" in prompt:
+                    return ModelReply(json.dumps({
+                        "classification": "paid_ad",
+                        "sponsor": "Possible Love",
+                        "evidence_quote": "the interview continues",
+                    }), 0.2)
+                return json.dumps({
+                    "classification": "editorial",
+                    "sponsor": "",
+                    "evidence_quote": "interview continues",
+                })
+            if "candidate discovery" in prompt:
+                return _response([
+                    {"start": 0, "end": 20, "quote": "For your consideration"},
+                    {"start": 0, "end": 150, "quote": "the interview continues"},
+                ])
+            return "{}"
+
+        spans = classify_transcript(segments, 400, complete)
+        self.assertTrue(_covers(spans, 5))
+        self.assertFalse(_covers(spans, 100))
+        self.assertTrue(spans.hold_edges)
+
+    def test_salvage_does_not_walk_into_the_next_low_confidence_spot(self):
+        segments = [
+            {"start": 0, "end": 20, "text": "For your consideration. Possible Love is a heart-stopping stunner."},
+            {"start": 21, "end": 55, "text": "Visit acme.com for a year of better sleep."},
+            {"start": 55, "end": 120, "text": "Welcome back to the interview about sleep."},
+        ]
+
+        def complete(prompt):
+            if "Classify one candidate" in prompt:
+                if "discovery quote: for your consideration" in prompt:
+                    return ModelReply(json.dumps({
+                        "classification": "paid_ad",
+                        "sponsor": "Possible Love",
+                        "evidence_quote": "For your consideration",
+                    }), 0.96)
+                if "discovery quote: visit acme.com" in prompt:
+                    return ModelReply(json.dumps({
+                        "classification": "paid_ad",
+                        "sponsor": "Acme",
+                        "evidence_quote": "visit acme.com",
+                    }), 0.2)
+                return json.dumps({
+                    "classification": "editorial",
+                    "sponsor": "",
+                    "evidence_quote": "interview about sleep",
+                })
+            if "candidate discovery" in prompt:
+                return _response([
+                    {"start": 0, "end": 20, "quote": "For your consideration"},
+                    {"start": 21, "end": 55, "quote": "visit acme.com"},
+                ])
+            return "{}"
+
+        spans = classify_transcript(segments, 120, complete)
+        self.assertTrue(_covers(spans, 5))
+        self.assertFalse(_covers(spans, 30))
+        self.assertFalse(_covers(spans, 60))
 
 
 if __name__ == "__main__":

@@ -633,6 +633,19 @@ def load_episode_chapters(episode):
     return payload.get("chapters") or []
 
 
+def settle_detected_spans(segments, spans, model_spans):
+    """Snap a cut back onto the transcript after the audio edge search.
+
+    A salvaged pass already kept only the spots the model was sure about.
+    Walking into the next break would put a spot it was not sure about back.
+    """
+    if not getattr(model_spans, "hold_edges", False):
+        spans = cover_neighboring_spots(segments, spans)
+    # Tightening can step back into the sign-off, and the neighbor walk can
+    # step forward into the host. Settle both edges against the transcript.
+    return finish_breaks(segments, spans)
+
+
 def render_sliced_episode(info, source_path, dest_path, segments, trace=None):
     """Render the production ad-cut path; ``trace`` is evaluation-only observability."""
     dest = Path(dest_path)
@@ -657,10 +670,7 @@ def render_sliced_episode(info, source_path, dest_path, segments, trace=None):
         print(f"\tAd model marked {len(model_spans)} span(s)")
     selected_spans = choose_cut_spans(phrase_spans, model_spans, publisher)
     spans = tighten_spans(audio, selected_spans)
-    spans = cover_neighboring_spots(segments, spans)
-    # Tightening can step back into the sign-off, and the neighbor walk can
-    # step forward into the host. Settle both edges against the transcript.
-    spans = finish_breaks(segments, spans)
+    spans = settle_detected_spans(segments, spans, model_spans)
     spans = with_show_trim(
         spans,
         audio_seconds,

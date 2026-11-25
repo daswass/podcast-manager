@@ -1,5 +1,7 @@
 from huggingface_hub import snapshot_download
 
+from ad_detect import ModelReply, _CLASSIFICATION_OPEN, paid_ad_confidence_from_chunks
+
 AD_MODEL = "mlx-community/Qwen2.5-7B-Instruct-4bit"
 
 # Hub checkout metadata. The ad model runs from the weights and tokenizer, so a
@@ -25,8 +27,10 @@ def local_ad_model_snapshot():
 def complete_ad_prompt(prompt):
     # MLX takes several seconds to import and the weights are only needed
     # while the nightly job is classifying ads. Headphone sync must not pay
-    # that cost.
+    # that cost. stream_generate is the same call generate() makes, and it
+    # keeps the label-token logprobs that generate() throws away.
     import mlx_lm
+    from mlx_lm.generate import stream_generate
 
     global _model, _tokenizer
     if _model is None or _tokenizer is None:
@@ -37,10 +41,39 @@ def complete_ad_prompt(prompt):
         tokenize=False,
         add_generation_prompt=True,
     )
-    return mlx_lm.generate(
+    # The label can start at the quote (`paid`) or after a space (` paid`).
+    # ` editorial` is one token, while `editorial` starts with `editor`.
+    label_token_ids = {}
+    for label in ("paid_ad", "house_promo", "editorial", "credits_or_outro"):
+        label_token_ids[label] = {
+            _tokenizer.encode(form, add_special_tokens=False)[0]
+            for form in (label, " " + label)
+        }
+    parts = []
+    chunks = []
+    text = ""
+    waiting_for_label = False
+    captured = False
+    for response in stream_generate(
         _model,
         _tokenizer,
         prompt=templated,
         max_tokens=2048,
-        verbose=False,
-    )
+    ):
+        piece = response.text or ""
+        parts.append(piece)
+        row = None
+        # Only the first label token carries the probability we keep. Reading
+        # the full-vocab vector on every other token just syncs the device.
+        if not captured and response.logprobs is not None and waiting_for_label and piece.strip():
+            row = {
+                label: max(float(response.logprobs[token_id]) for token_id in token_ids)
+                for label, token_ids in label_token_ids.items()
+            }
+            captured = True
+        upcoming = text + piece
+        if not captured and _CLASSIFICATION_OPEN.search(upcoming):
+            waiting_for_label = True
+        text = upcoming
+        chunks.append((piece, row))
+    return ModelReply("".join(parts), paid_ad_confidence_from_chunks(chunks))
